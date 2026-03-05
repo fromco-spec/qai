@@ -1,0 +1,12 @@
+# 機密情報（絶対にコミットしない）
+.env
+
+# ローカルキャッシュ・ログ（GitHub には不要）
+data/knowledge.txt
+logs/
+__pycache__/
+*.pyc
+.DS_Store
+
+# knowledge.json と同期ファイルは GitHub Actions がコミットするため除外しない
+# data/knowledge.json  ← コメントアウト（Actions が自動更新する）

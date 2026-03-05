@@ -1,0 +1,52 @@
+name: 毎日サマリー自動更新
+
+on:
+  # 毎朝7時（JST）= UTC 22時に実行
+  schedule:
+    - cron: '0 22 * * *'
+
+  # 手動実行ボタン（GitHub画面から「Run workflow」で即時実行も可能）
+  workflow_dispatch:
+
+jobs:
+  auto-summarize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージをインストール
+        run: pip install anthropic httpx python-dotenv notion-client
+
+      - name: サマリー自動生成（3DB）
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_POLICY:   ${{ secrets.NOTION_DB_POLICY }}
+          NOTION_DB_MANUAL:   ${{ secrets.NOTION_DB_MANUAL }}
+          NOTION_DB_PRICING:  ${{ secrets.NOTION_DB_PRICING }}
+        run: python auto_summarize.py
+
+      - name: 知識ベース更新（全DB）
+        env:
+          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_POLICY:   ${{ secrets.NOTION_DB_POLICY }}
+          NOTION_DB_MANUAL:   ${{ secrets.NOTION_DB_MANUAL }}
+          NOTION_DB_PRICING:  ${{ secrets.NOTION_DB_PRICING }}
+        run: python fetch_knowledge.py
+
+      - name: 更新された knowledge.json をコミット&プッシュ
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/knowledge.json data/last_sync.txt data/summary_last_run.txt
+          git diff --staged --quiet || git commit -m "chore: 知識ベース自動更新 $(date '+%Y-%m-%d')"
+          git push
