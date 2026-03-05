@@ -1,0 +1,5 @@
+anthropic
+httpx
+python-dotenv
+notion-client
+streamlit
