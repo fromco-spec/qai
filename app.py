@@ -762,19 +762,45 @@ def page_notion_edit():
 
 # ---------- メイン ----------
 
+ADMIN_PASSWORD = "kaede1125"
+
+
 def main():
     with st.sidebar:
         st.markdown(
             "<h2 style='font-size:18px; color:#1A237E; margin-bottom:4px;'>📞 AIアシスタント</h2>",
             unsafe_allow_html=True,
         )
-        st.caption("コールセンター業務サポートツール")
+        st.caption("別途業務サポートツール")
         st.divider()
-        page = st.radio(
-            "ページ",
-            ["💬 チャット", "📊 管理画面", "✏️ Notion編集"],
-            label_visibility="collapsed",
+
+        # ── ページ選択（ブロック形式）──────────────────────────
+        st.markdown(
+            "<p style='font-size:12px; color:#888; margin-bottom:8px;'>ページを選択</p>",
+            unsafe_allow_html=True,
         )
+
+        if "page" not in st.session_state:
+            st.session_state.page = "chat"
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("💬\nチャット", use_container_width=True,
+                         type="primary" if st.session_state.page == "chat" else "secondary"):
+                st.session_state.page = "chat"
+                st.rerun()
+        with col2:
+            if st.button("📊\n管理画面", use_container_width=True,
+                         type="primary" if st.session_state.page == "admin" else "secondary"):
+                st.session_state.page = "admin_login"
+                st.rerun()
+        with col3:
+            if st.button("✏️\n概念編集", use_container_width=True,
+                         type="primary" if st.session_state.page == "notion" else "secondary"):
+                st.session_state.page = "notion"
+                st.rerun()
+
+        page = st.session_state.page
         st.divider()
 
         # ── ⚡ 施策即時同期ボタン ──────────────────────────
@@ -836,12 +862,35 @@ def main():
             unsafe_allow_html=True,
         )
 
-    # ラベルからアイコンを除いてページ判定
-    if "チャット" in page:
+    # ページ判定
+    if page == "chat":
         page_chat()
-    elif "管理画面" in page:
-        page_admin()
-    else:
+    elif page == "admin_login":
+        # パスワード認証
+        if "admin_authenticated" not in st.session_state:
+            st.session_state.admin_authenticated = False
+
+        if st.session_state.admin_authenticated:
+            st.session_state.page = "admin"
+            page_admin()
+        else:
+            st.title("🔐 管理画面")
+            st.markdown("管理画面にアクセスするにはパスワードを入力してください。")
+            pw = st.text_input("パスワード", type="password", key="admin_pw_input")
+            if st.button("ログイン", type="primary"):
+                if pw == ADMIN_PASSWORD:
+                    st.session_state.admin_authenticated = True
+                    st.session_state.page = "admin"
+                    st.rerun()
+                else:
+                    st.error("パスワードが違います")
+    elif page == "admin":
+        if st.session_state.get("admin_authenticated"):
+            page_admin()
+        else:
+            st.session_state.page = "admin_login"
+            st.rerun()
+    elif page == "notion":
         page_notion_edit()
 
 
