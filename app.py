@@ -783,22 +783,18 @@ def main():
         if "page" not in st.session_state:
             st.session_state.page = "chat"
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("💬\nチャット", use_container_width=True,
-                         type="primary" if st.session_state.page == "chat" else "secondary"):
-                st.session_state.page = "chat"
-                st.rerun()
-        with col2:
-            if st.button("📊\n管理画面", use_container_width=True,
-                         type="primary" if st.session_state.page == "admin" else "secondary"):
-                st.session_state.page = "admin_login"
-                st.rerun()
-        with col3:
-            if st.button("✏️\n概念編集", use_container_width=True,
-                         type="primary" if st.session_state.page == "notion" else "secondary"):
-                st.session_state.page = "notion"
-                st.rerun()
+        if st.button("💬  チャット", use_container_width=True,
+                     type="primary" if st.session_state.page == "chat" else "secondary"):
+            st.session_state.page = "chat"
+            st.rerun()
+        if st.button("📊  管理画面", use_container_width=True,
+                     type="primary" if st.session_state.page in ("admin", "admin_login") else "secondary"):
+            st.session_state.page = "admin_login"
+            st.rerun()
+        if st.button("✏️  概念編集", use_container_width=True,
+                     type="primary" if st.session_state.page == "notion" else "secondary"):
+            st.session_state.page = "notion"
+            st.rerun()
 
         page = st.session_state.page
         st.divider()
