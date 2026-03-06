@@ -1,0 +1,62 @@
+name: 週次品質レポート（毎週月曜8時送信）
+
+on:
+  # 毎週月曜 8:00 JST（= UTC 23:00 日曜）に自動実行
+  schedule:
+    - cron: "0 23 * * 0"
+  # 管理画面の「今すぐ送信」ボタンから手動トリガー
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "集計対象の日数"
+        required: false
+        default: "7"
+      dry_run:
+        description: "dry-run（Slack送信しない）"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  send-weekly-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 日本語フォントをインストール
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      - name: 週次レポートを生成・送信
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL:     ${{ secrets.SLACK_CHANNEL }}
+        run: |
+          DAYS="${{ github.event.inputs.days || '7' }}"
+          DRY="${{ github.event.inputs.dry_run || 'false' }}"
+          if [ "$DRY" = "true" ]; then
+            python3 weekly_report.py --days "$DAYS" --dry-run
+          else
+            python3 weekly_report.py --days "$DAYS"
+          fi
+
+      - name: 生成PDFをアーティファクトとして保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-report-pdf
+          path: logs/reports/*.pdf
+          retention-days: 90

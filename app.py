@@ -803,6 +803,54 @@ def page_admin():
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
+    # --- 週次レポート送信 ---
+    st.divider()
+    st.subheader("📤 週次品質レポートをSlackに送信")
+    st.caption("直近7日分のログを集計し、AI分析付きPDFをSlackに送信します")
+
+    col_days, col_btn, col_dry = st.columns([2, 2, 2])
+    with col_days:
+        report_days = st.selectbox("集計期間", [7, 14, 30], index=0, key="report_days",
+                                   format_func=lambda x: f"直近{x}日")
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
+        send_btn = st.button("📤 今すぐSlackに送信", use_container_width=True, type="primary",
+                             key="send_report_btn")
+    with col_dry:
+        st.markdown("<br>", unsafe_allow_html=True)
+        dry_btn = st.button("📄 PDFのみ生成（送信なし）", use_container_width=True,
+                            key="dry_report_btn")
+
+    if send_btn or dry_btn:
+        is_dry = dry_btn
+        with st.spinner("レポート生成中..."):
+            try:
+                import importlib.util, sys as _sys
+                spec = importlib.util.spec_from_file_location(
+                    "weekly_report", BASE_DIR / "weekly_report.py"
+                )
+                wr = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(wr)
+                ok, msg = wr.run(days=report_days, dry_run=is_dry)
+            except Exception as ex:
+                ok, msg = False, str(ex)
+
+        if ok:
+            st.success(f"✅ {msg}")
+            # PDFダウンロードボタンを表示
+            report_dir = BASE_DIR / "logs" / "reports"
+            pdfs = sorted(report_dir.glob("*.pdf"), reverse=True) if report_dir.exists() else []
+            if pdfs:
+                latest_pdf = pdfs[0]
+                st.download_button(
+                    label=f"📥 {latest_pdf.name} をダウンロード",
+                    data=latest_pdf.read_bytes(),
+                    file_name=latest_pdf.name,
+                    mime="application/pdf",
+                )
+        else:
+            st.error(f"❌ {msg}")
+
 
 # ---------- ページ: Notion編集 ----------
 
