@@ -43,6 +43,7 @@ jobs:
           NOTION_DB_PRICING:           ${{ secrets.NOTION_DB_PRICING }}
           NOTION_PAGE_MANUAL:          ${{ secrets.NOTION_PAGE_MANUAL }}
           NOTION_PAGE_POLICY:          ${{ secrets.NOTION_PAGE_POLICY }}
+          NOTION_DB_PRODUCTS:          ${{ secrets.NOTION_DB_PRODUCTS }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python fetch_knowledge.py
 

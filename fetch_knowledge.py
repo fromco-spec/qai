@@ -38,8 +38,9 @@ _force_load_env(BASE_DIR / ".env")
 
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 DB_IDS = {
-    "policy":  os.environ.get("NOTION_DB_POLICY",  ""),  # 施策DB（旧）
-    "manual":  os.environ.get("NOTION_DB_MANUAL",  ""),  # マニュアルDB（旧）
+    "policy":   os.environ.get("NOTION_DB_POLICY",    ""),  # 施策DB
+    "manual":   os.environ.get("NOTION_DB_MANUAL",    ""),  # マニュアルDB
+    "products": os.environ.get("NOTION_DB_PRODUCTS",  ""),  # 商品詳細DB
     # pricing は Google Sheets から取得するため Notion IDは不要
 }
 # 通常ページとして読み込む新しいマニュアル・施策ページ
@@ -391,17 +392,103 @@ def fetch_db(headers: dict, db_id: str, label: str) -> list[dict]:
     return records
 
 
+def fetch_products_db(headers: dict, db_id: str) -> list[dict]:
+    """
+    商品詳細DBから全レコードを取得し、プロパティをAIが読みやすいテキストに整形する。
+    サマリープロパティが存在しないため、各プロパティを直接テキスト化する。
+    外部共有=True のレコードのみ取得する。
+    """
+    if not db_id:
+        print("  [SKIP] 商品詳細: DB IDが未設定")
+        return []
+
+    records = []
+    cursor = None
+    while True:
+        body = {"page_size": 100}
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = httpx.post(
+            f"https://api.notion.com/v1/databases/{db_id}/query",
+            headers=headers,
+            json=body,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+
+            # 外部共有フラグが False のレコードはスキップ
+            if not props.get("外部共有", {}).get("checkbox", True):
+                continue
+
+            # 商品名（title）
+            name = "".join(
+                t["plain_text"] for t in props.get("商品名", {}).get("title", [])
+            ).strip()
+            if not name:
+                continue
+
+            # 各プロパティをテキスト化
+            lines = [f"【商品名】{name}"]
+
+            category = props.get("カテゴリ", {}).get("select")
+            if category:
+                lines.append(f"カテゴリ: {category['name']}")
+
+            status = props.get("ステータス", {}).get("status")
+            if status:
+                lines.append(f"ステータス: {status['name']}")
+
+            first_price = props.get("初回価格", {}).get("number")
+            if first_price is not None:
+                lines.append(f"初回価格: {first_price}円")
+
+            regular_price = props.get("2回目以降価格", {}).get("number")
+            if regular_price is not None:
+                lines.append(f"2回目以降価格: {regular_price}円")
+
+            single_price = props.get("単品価格", {}).get("number")
+            if single_price is not None:
+                lines.append(f"単品価格: {single_price}円")
+
+            text = "".join(
+                t["plain_text"] for t in props.get("テキスト", {}).get("rich_text", [])
+            ).strip()
+            if text:
+                lines.append(f"配送情報: {text}")
+
+            detail_url = props.get("詳細ページ", {}).get("url", "")
+
+            records.append({
+                "label":   "商品詳細",
+                "id":      page["id"],
+                "title":   name,
+                "summary": "\n".join(lines),
+                "url":     detail_url or page.get("url", ""),
+            })
+
+        if not data.get("has_more"):
+            break
+        cursor = data["next_cursor"]
+
+    print(f"  [商品詳細] {len(records)} 件取得")
+    return records
+
+
 def build_txt(knowledge: dict) -> str:
     lines = [
         "# コールセンター向け知識ベース",
         f"# 生成日時: {knowledge['fetched_at']}",
-        "# 優先順位: 施策 > マニュアル > 料金表",
+        "# 優先順位: 施策 > マニュアル > 料金表 > 商品詳細",
         "",
     ]
     for key, header in [
-        ("policy",  "【施策】（最優先：特例・キャンペーン情報）"),
-        ("manual",  "【マニュアル】（ルール・手順）"),
-        ("pricing", "【料金表】（価格・プラン情報）"),
+        ("policy",   "【施策】（最優先：特例・キャンペーン情報）"),
+        ("manual",   "【マニュアル】（ルール・手順）"),
+        ("pricing",  "【料金表】（価格・プラン情報）"),
+        ("products", "【商品詳細】（商品名・価格・カテゴリ）"),
     ]:
         records = knowledge.get(key, [])
         lines.append(f"## {header}")
@@ -459,11 +546,12 @@ def main():
 
         knowledge = {
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
-            "policy":  new_policy,
-            "manual":  existing.get("manual",  []),   # 既存データを保持
-            "pricing": existing.get("pricing", []),   # 既存データを保持（Google Sheets）
+            "policy":   new_policy,
+            "manual":   existing.get("manual",   []),  # 既存データを保持
+            "pricing":  existing.get("pricing",  []),  # 既存データを保持（Google Sheets）
+            "products": existing.get("products", []),  # 既存データを保持
         }
-        print(f"  施策: {len(new_policy)} 件 / マニュアル・料金表: 既存データを継続使用")
+        print(f"  施策: {len(new_policy)} 件 / マニュアル・料金表・商品詳細: 既存データを継続使用")
 
     else:
         # ── 全DB更新モード ──────────────────────────────────
@@ -482,12 +570,13 @@ def main():
 
         knowledge = {
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
-            "policy":  policy_records,
-            "manual":  manual_records,
-            "pricing": fetch_sheets_pricing(),   # ← Google Sheets から取得
+            "policy":   policy_records,
+            "manual":   manual_records,
+            "pricing":  fetch_sheets_pricing(),                        # Google Sheets
+            "products": fetch_products_db(headers, DB_IDS["products"]), # 商品詳細DB
         }
 
-    total = sum(len(knowledge[k]) for k in ("policy", "manual", "pricing"))
+    total = sum(len(knowledge[k]) for k in ("policy", "manual", "pricing", "products"))
     print(f"合計 {total} 件")
 
     # JSON保存

@@ -47,9 +47,10 @@ CHAT_HISTORY_CSV  = LOGS_DIR / "chat_history_log.csv"   # ③ PDCA用ログ
 LAST_SYNC_FILE    = DATA_DIR / "last_sync.txt"          # 施策同期完了日時
 
 # RAG設定
-RAG_TOP_POLICY  = 20   # 施策：スコア上位件数
-RAG_TOP_MANUAL  = 30   # マニュアル：スコア上位件数
-RAG_TOP_PRICING = 10   # 料金表：スコア上位件数
+RAG_TOP_POLICY   = 20   # 施策：スコア上位件数
+RAG_TOP_MANUAL   = 30   # マニュアル：スコア上位件数
+RAG_TOP_PRICING  = 10   # 料金表：スコア上位件数
+RAG_TOP_PRODUCTS =  5   # 商品詳細：スコア上位件数
 
 st.set_page_config(
     page_title="コールセンター AIアシスタント",
@@ -157,9 +158,10 @@ def load_all_records() -> tuple[dict, str]:
         data = json.load(f)
     fetched_at = data.get("fetched_at", "不明")
     records = {
-        "policy":  data.get("policy",  []),
-        "manual":  data.get("manual",  []),
-        "pricing": data.get("pricing", []),
+        "policy":   data.get("policy",   []),
+        "manual":   data.get("manual",   []),
+        "pricing":  data.get("pricing",  []),
+        "products": data.get("products", []),
     }
     return records, fetched_at
 
@@ -225,9 +227,10 @@ def retrieve_knowledge(question: str, records: dict) -> tuple[str, list[str]]:
     query_tokens = _tokenize(expanded_query)
 
     section_meta = [
-        ("policy",  "【施策】（最優先：特例・キャンペーン情報）",  RAG_TOP_POLICY),
-        ("manual",  "【マニュアル】（ルール・手順）",             RAG_TOP_MANUAL),
-        ("pricing", "【料金表】（価格・プラン情報）",             RAG_TOP_PRICING),
+        ("policy",   "【施策】（最優先：特例・キャンペーン情報）",  RAG_TOP_POLICY),
+        ("manual",   "【マニュアル】（ルール・手順）",             RAG_TOP_MANUAL),
+        ("pricing",  "【料金表】（価格・プラン情報）",             RAG_TOP_PRICING),
+        ("products", "【商品詳細】（商品名・価格・カテゴリ）",     RAG_TOP_PRODUCTS),
     ]
 
     sections = []
@@ -255,6 +258,7 @@ def retrieve_knowledge(question: str, records: dict) -> tuple[str, list[str]]:
         f"[RAG検索結果: 施策{retrieved_counts.get('policy',0)}件 / "
         f"マニュアル{retrieved_counts.get('manual',0)}件 / "
         f"料金表{retrieved_counts.get('pricing',0)}件 / "
+        f"商品詳細{retrieved_counts.get('products',0)}件 / "
         f"拡張クエリ: {expanded_query[:60]}{'…' if len(expanded_query) > 60 else ''}]"
     )
     knowledge_text = f"{summary_line}\n優先順位: 施策 > マニュアル > 料金表\n\n{body}"
