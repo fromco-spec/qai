@@ -38,9 +38,14 @@ _force_load_env(BASE_DIR / ".env")
 
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 DB_IDS = {
-    "policy":  os.environ.get("NOTION_DB_POLICY",  ""),  # 施策（最優先）
-    "manual":  os.environ.get("NOTION_DB_MANUAL",  ""),  # マニュアル
+    "policy":  os.environ.get("NOTION_DB_POLICY",  ""),  # 施策DB（旧）
+    "manual":  os.environ.get("NOTION_DB_MANUAL",  ""),  # マニュアルDB（旧）
     # pricing は Google Sheets から取得するため Notion IDは不要
+}
+# 通常ページとして読み込む新しいマニュアル・施策ページ
+PAGE_IDS = {
+    "manual": os.environ.get("NOTION_PAGE_MANUAL", ""),  # 【外部共有】OPマニュアル
+    "policy": os.environ.get("NOTION_PAGE_POLICY", ""),  # フロム共有事項
 }
 
 # Google Sheets 設定
@@ -202,6 +207,128 @@ def fetch_sheets_pricing() -> list[dict]:
     return records
 
 
+def _rich_text_to_str(rich_text: list) -> str:
+    """Notionのrich_textリストをプレーンテキストに変換"""
+    return "".join(t.get("plain_text", "") for t in rich_text).strip()
+
+
+def _fetch_table_rows(headers: dict, table_block_id: str) -> list[list[str]]:
+    """テーブルブロックの行データを取得"""
+    rows = []
+    resp = httpx.get(
+        f"https://api.notion.com/v1/blocks/{table_block_id}/children?page_size=100",
+        headers=headers,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return rows
+    for block in resp.json().get("results", []):
+        cells = block.get("table_row", {}).get("cells", [])
+        row = ["".join(c.get("plain_text", "") for c in cell) for cell in cells]
+        if any(row):
+            rows.append(row)
+    return rows
+
+
+def _table_to_text(heading: str, rows: list[list[str]]) -> str:
+    """見出し＋テーブル行をAIが読みやすいテキストに変換"""
+    if not rows:
+        return ""
+    lines = [f"【{heading}】"]
+    # 1行目をヘッダーとして扱う
+    header = rows[0]
+    lines.append("（列：" + " | ".join(header) + "）")
+    for row in rows[1:]:
+        parts = []
+        for i, val in enumerate(row):
+            val = val.strip()
+            if not val:
+                continue
+            col = header[i].strip() if i < len(header) else f"列{i+1}"
+            parts.append(f"{col}:{val}" if col else val)
+        if parts:
+            lines.append("・" + " / ".join(parts))
+    return "\n".join(lines)
+
+
+def fetch_notion_page_as_records(
+    headers: dict, page_id: str, label: str, page_title: str
+) -> list[dict]:
+    """
+    通常のNotionページ（非DB）を読み込み、
+    heading_3＋tableの組み合わせをセクション単位でレコード化する。
+    速度優先：ページ全体を1回で取得、テーブルのみ個別取得。
+    """
+    if not page_id:
+        print(f"  [SKIP] {label}: ページIDが未設定")
+        return []
+
+    # ページの全ブロックを取得
+    resp = httpx.get(
+        f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100",
+        headers=headers,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        print(f"  [ERROR] {label} ページ取得失敗: {resp.status_code}")
+        return []
+
+    blocks = resp.json().get("results", [])
+    records = []
+    current_heading = page_title  # 見出しなしの場合はページタイトルを使用
+    pending_tables = []           # 現在の見出しに属するテーブルID
+
+    def flush_section():
+        """現在の見出し＋テーブルをレコードに変換してrecordsに追加"""
+        if not pending_tables:
+            return
+        all_text_parts = []
+        for table_id in pending_tables:
+            rows = _fetch_table_rows(headers, table_id)
+            text = _table_to_text(current_heading, rows)
+            if text:
+                all_text_parts.append(text)
+        if all_text_parts:
+            records.append({
+                "label":   label,
+                "id":      f"page_{page_id}_{current_heading[:20]}",
+                "title":   current_heading,
+                "summary": "\n\n".join(all_text_parts),
+                "url":     f"https://www.notion.so/{page_id.replace('-', '')}",
+            })
+
+    for block in blocks:
+        btype = block.get("type", "")
+        bid   = block.get("id", "")
+
+        if btype in ("heading_1", "heading_2", "heading_3"):
+            # 新しい見出し → 前セクションを確定してリセット
+            flush_section()
+            current_heading = _rich_text_to_str(
+                block.get(btype, {}).get("rich_text", [])
+            ) or current_heading
+            pending_tables = []
+
+        elif btype == "table":
+            pending_tables.append(bid)
+
+        elif btype == "toggle":
+            # toggleブロックのテキストを見出しとして扱う
+            toggle_text = _rich_text_to_str(
+                block.get("toggle", {}).get("rich_text", [])
+            )
+            if toggle_text and toggle_text not in ("目次",):
+                flush_section()
+                current_heading = toggle_text
+                pending_tables = []
+
+    # 最後のセクションを確定
+    flush_section()
+
+    print(f"  [{label}] {len(records)} セクション取得（ページ本文）")
+    return records
+
+
 def get_title(props: dict) -> str:
     for key in TITLE_PROPS:
         if key in props:
@@ -325,7 +452,10 @@ def main():
                 existing = json.load(f)
 
         print("Notionから施策データを取得中...")
-        new_policy = fetch_db(headers, DB_IDS["policy"], "施策")
+        # 新施策ページ（通常ページ）+ 旧施策DB の両方を取得してマージ
+        new_policy = fetch_notion_page_as_records(
+            headers, PAGE_IDS["policy"], "施策", "フロム共有事項"
+        ) + fetch_db(headers, DB_IDS["policy"], "施策")
 
         knowledge = {
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
@@ -339,10 +469,21 @@ def main():
         # ── 全DB更新モード ──────────────────────────────────
         print("Notionからデータを取得中...")
         print("Google Sheetsから料金表を取得中...")
+
+        # 施策：新ページ＋旧DB
+        policy_records = fetch_notion_page_as_records(
+            headers, PAGE_IDS["policy"], "施策", "フロム共有事項"
+        ) + fetch_db(headers, DB_IDS["policy"], "施策")
+
+        # マニュアル：新ページ＋旧DB
+        manual_records = fetch_notion_page_as_records(
+            headers, PAGE_IDS["manual"], "マニュアル", "OPマニュアル"
+        ) + fetch_db(headers, DB_IDS["manual"], "マニュアル")
+
         knowledge = {
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
-            "policy":  fetch_db(headers, DB_IDS["policy"],  "施策"),
-            "manual":  fetch_db(headers, DB_IDS["manual"],  "マニュアル"),
+            "policy":  policy_records,
+            "manual":  manual_records,
             "pricing": fetch_sheets_pricing(),   # ← Google Sheets から取得
         }
 
