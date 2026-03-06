@@ -392,11 +392,72 @@ def fetch_db(headers: dict, db_id: str, label: str) -> list[dict]:
     return records
 
 
+def _fetch_product_page_text(headers: dict, page_id: str, product_name: str) -> str:
+    """
+    商品詳細ページの本文（table・heading+table）をテキスト化する。
+    - 最初のtable: 商品概要（販売名・内容量・商品概要など）
+    - heading + table: QA・商品コードなど
+    価格情報は料金表が正なのでスキップ。スピード重視でURL内のIDを直接使用。
+    """
+    resp = httpx.get(
+        f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100",
+        headers=headers,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return ""
+
+    blocks = resp.json().get("results", [])
+    lines = []
+    current_heading = ""
+
+    # 価格関連キーワード（料金表が正なのでスキップ）
+    price_keys = {"初回価格", "2回目以降価格", "単品価格", "定期価格", "価格", "料金"}
+
+    for block in blocks:
+        btype = block.get("type", "")
+        bid   = block.get("id", "")
+
+        if btype in ("heading_1", "heading_2", "heading_3"):
+            current_heading = _rich_text_to_str(block.get(btype, {}).get("rich_text", []))
+
+        elif btype == "table":
+            rows = _fetch_table_rows(headers, bid)
+            if not rows:
+                continue
+            # 商品概要テーブル（見出しなし or 最初のテーブル）
+            section_label = current_heading if current_heading else "商品概要"
+            table_lines = [f"【{section_label}】"]
+            for row in rows:
+                if len(row) >= 2:
+                    key, val = row[0].strip(), row[1].strip()
+                    # 価格・URL系はスキップ
+                    if not val or key in price_keys:
+                        continue
+                    if val.startswith("http"):
+                        continue
+                    table_lines.append(f"・{key}: {val}")
+                elif len(row) == 1 and row[0].strip():
+                    table_lines.append(f"・{row[0].strip()}")
+            if len(table_lines) > 1:
+                lines.extend(table_lines)
+
+        elif btype == "callout":
+            text = _rich_text_to_str(block.get("callout", {}).get("rich_text", []))
+            if text and len(text) > 5:
+                lines.append(f"・{text[:200]}")
+
+        # image / column_list / toggle などはスキップ
+
+    return "\n".join(lines)
+
+
 def fetch_products_db(headers: dict, db_id: str) -> list[dict]:
     """
-    商品詳細DBから全レコードを取得し、プロパティをAIが読みやすいテキストに整形する。
-    サマリープロパティが存在しないため、各プロパティを直接テキスト化する。
+    商品詳細DBから全レコードを取得し、
+    各商品の「詳細ページ」本文（商品概要・QA）も読み込んでテキスト化する。
     外部共有=True のレコードのみ取得する。
+    価格情報は料金表が正なのでDBのプロパティ価格はスキップ。
     """
     if not db_id:
         print("  [SKIP] 商品詳細: DB IDが未設定")
@@ -430,7 +491,7 @@ def fetch_products_db(headers: dict, db_id: str) -> list[dict]:
             if not name:
                 continue
 
-            # 各プロパティをテキスト化
+            # DBプロパティ（カテゴリ・ステータスのみ。価格は料金表が正なのでスキップ）
             lines = [f"【商品名】{name}"]
 
             category = props.get("カテゴリ", {}).get("select")
@@ -441,25 +502,16 @@ def fetch_products_db(headers: dict, db_id: str) -> list[dict]:
             if status:
                 lines.append(f"ステータス: {status['name']}")
 
-            first_price = props.get("初回価格", {}).get("number")
-            if first_price is not None:
-                lines.append(f"初回価格: {first_price}円")
-
-            regular_price = props.get("2回目以降価格", {}).get("number")
-            if regular_price is not None:
-                lines.append(f"2回目以降価格: {regular_price}円")
-
-            single_price = props.get("単品価格", {}).get("number")
-            if single_price is not None:
-                lines.append(f"単品価格: {single_price}円")
-
-            text = "".join(
-                t["plain_text"] for t in props.get("テキスト", {}).get("rich_text", [])
-            ).strip()
-            if text:
-                lines.append(f"配送情報: {text}")
-
+            # 詳細ページの本文を取得（商品概要・QAなど）
             detail_url = props.get("詳細ページ", {}).get("url", "")
+            if detail_url:
+                # URLからページIDを抽出（notion.so/xxxxx の末尾32文字）
+                detail_page_id = detail_url.rstrip("/").split("/")[-1].replace("-", "")
+                if len(detail_page_id) == 32:
+                    page_text = _fetch_product_page_text(headers, detail_page_id, name)
+                    if page_text:
+                        lines.append("")
+                        lines.append(page_text)
 
             records.append({
                 "label":   "商品詳細",
