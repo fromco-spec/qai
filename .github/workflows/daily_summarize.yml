@@ -24,7 +24,7 @@ jobs:
           cache: 'pip'
 
       - name: 依存パッケージをインストール
-        run: pip install anthropic httpx python-dotenv notion-client
+        run: pip install anthropic httpx python-dotenv notion-client gspread google-auth
 
       - name: サマリー自動生成（3DB）
         env:
@@ -37,10 +37,13 @@ jobs:
 
       - name: 知識ベース更新（全DB）
         env:
-          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
-          NOTION_DB_POLICY:   ${{ secrets.NOTION_DB_POLICY }}
-          NOTION_DB_MANUAL:   ${{ secrets.NOTION_DB_MANUAL }}
-          NOTION_DB_PRICING:  ${{ secrets.NOTION_DB_PRICING }}
+          NOTION_API_KEY:              ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_POLICY:            ${{ secrets.NOTION_DB_POLICY }}
+          NOTION_DB_MANUAL:            ${{ secrets.NOTION_DB_MANUAL }}
+          NOTION_DB_PRICING:           ${{ secrets.NOTION_DB_PRICING }}
+          NOTION_PAGE_MANUAL:          ${{ secrets.NOTION_PAGE_MANUAL }}
+          NOTION_PAGE_POLICY:          ${{ secrets.NOTION_PAGE_POLICY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python fetch_knowledge.py
 
       - name: 更新された knowledge.json をコミット&プッシュ
