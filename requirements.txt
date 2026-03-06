@@ -5,4 +5,4 @@ notion-client
 streamlit
 gspread
 google-auth
-reportlab
+fpdf2
