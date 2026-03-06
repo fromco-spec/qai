@@ -11,30 +11,15 @@ PDFレポートを生成して Slack に送信する。
 
 import argparse
 import csv
-import io
-import json
 import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 import httpx
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.platypus import (
-    HRFlowable,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from fpdf import FPDF, XPos, YPos
 
 # ---------- パス設定 ----------
 
@@ -42,6 +27,16 @@ BASE_DIR         = Path(__file__).parent
 LOGS_DIR         = BASE_DIR / "logs"
 CHAT_HISTORY_CSV = LOGS_DIR / "chat_history_log.csv"
 REPORT_DIR       = LOGS_DIR / "reports"
+FONT_DIR         = BASE_DIR / "data" / "fonts"
+
+# フォントファイルのパス候補（優先順）
+FONT_CANDIDATES = [
+    FONT_DIR / "NotoSansCJKjp-Regular.otf",
+    FONT_DIR / "NotoSansCJKjp-Regular.ttf",
+    # Linux (GitHub Actions)
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf"),
+]
 
 # ---------- .env 読み込み ----------
 
@@ -56,29 +51,6 @@ def _force_load_env(env_path: Path) -> None:
                 os.environ[k.strip()] = v.strip()
 
 _force_load_env(BASE_DIR / ".env")
-
-# ---------- フォント設定（日本語対応） ----------
-
-def _register_japanese_font() -> str:
-    """システムの日本語フォントを登録して名前を返す。見つからなければ Helvetica を返す。"""
-    candidates = [
-        # macOS
-        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/Library/Fonts/Arial Unicode MS.ttf",
-        # Linux (GitHub Actions / Streamlit Cloud)
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for path in candidates:
-        if Path(path).exists():
-            try:
-                pdfmetrics.registerFont(TTFont("JpFont", path))
-                return "JpFont"
-            except Exception:
-                continue
-    return "Helvetica"
 
 
 # ---------- CSV 読み込み ----------
@@ -110,7 +82,6 @@ def aggregate(rows: list[dict]) -> dict:
     no_fb      = total - resolved - unresolved
     resolution_rate = round(resolved / total * 100, 1) if total > 0 else 0
 
-    # 日別件数
     daily: dict[str, int] = {}
     for r in rows:
         try:
@@ -119,7 +90,6 @@ def aggregate(rows: list[dict]) -> dict:
         except Exception:
             pass
 
-    # 未解決 / フィードバックなしの質問一覧
     problem_rows = [r for r in rows if r.get("feedback") in ("unresolved", "", None)]
 
     return {
@@ -136,16 +106,14 @@ def aggregate(rows: list[dict]) -> dict:
 # ---------- AI 分析 ----------
 
 def ai_analysis(rows: list[dict], stats: dict) -> str:
-    """Claude Sonnet で問題のある質問を分析し、改善アドバイスを返す。"""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        return "（ANTHROPIC_API_KEY が未設定のため分析スキップ）"
+        return "ANTHROPIC_API_KEY が未設定のため分析スキップ"
 
     problem_rows = stats["problem_rows"]
     if not problem_rows:
         return "未解決・フィードバックなしの質問はありませんでした。引き続き品質を維持してください。"
 
-    # 分析対象は最大15件（トークン節約）
     sample = problem_rows[:15]
     cases = "\n".join(
         f"[{i+1}] Q: {r['question']}\n    A（抜粋）: {r['answer'][:120]}...\n    フィードバック: {r.get('feedback') or 'なし'}"
@@ -159,16 +127,16 @@ def ai_analysis(rows: list[dict], stats: dict) -> str:
 
 上記を分析して、以下の形式で日本語でレポートしてください：
 
-## 1. 問題パターンの分類
+【1. 問題パターンの分類】
 質問を2〜4つのパターンに分類し、各パターンの件数と傾向を説明する。
 
-## 2. 回答精度が低い原因
+【2. 回答精度が低い原因】
 なぜ正確な回答ができなかったのか、具体的な原因を3点以内で挙げる。
 
-## 3. 改善アドバイス
+【3. 改善アドバイス】
 知識ベースやプロンプトをどう修正すれば回答精度が上がるか、具体的なアクションを3点提案する。
 
-## 4. 優先対応が必要な質問トップ3
+【4. 優先対応が必要な質問トップ3】
 最も早急に対処すべき質問を3つ挙げ、それぞれの改善案を1文で述べる。
 
 簡潔・箇条書き中心で、800文字以内にまとめてください。"""
@@ -182,157 +150,170 @@ def ai_analysis(rows: list[dict], stats: dict) -> str:
         )
         return resp.content[0].text
     except Exception as e:
-        return f"（AI分析エラー: {e}）"
+        return f"AI分析エラー: {e}"
 
 
-# ---------- PDF 生成 ----------
+# ---------- PDF生成（fpdf2 + 日本語フォント） ----------
+
+class ReportPDF(FPDF):
+    def __init__(self, font_path: Path):
+        super().__init__(orientation="P", unit="mm", format="A4")
+        self.font_path = str(font_path)
+        self.add_font("JP", style="", fname=self.font_path)
+        self.set_auto_page_break(auto=True, margin=15)
+        self.set_margins(20, 20, 20)
+
+    def header(self):
+        pass
+
+    def footer(self):
+        self.set_y(-12)
+        self.set_font("JP", size=7)
+        self.set_text_color(150, 150, 150)
+        self.cell(0, 5, f"Q&Ai コールセンター品質管理レポート　生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C")
+
+    def section_title(self, text: str):
+        self.ln(4)
+        self.set_font("JP", size=13)
+        self.set_text_color(21, 101, 192)
+        self.cell(0, 8, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_draw_color(187, 222, 251)
+        self.line(self.get_x(), self.get_y(), self.get_x() + 170, self.get_y())
+        self.ln(2)
+        self.set_text_color(0, 0, 0)
+
+    def body_text(self, text: str, size: int = 9):
+        self.set_font("JP", size=size)
+        self.set_text_color(30, 30, 30)
+        self.multi_cell(0, 6, text)
+
+    def colored_table(self, headers: list, rows: list, col_widths: list,
+                      header_color: tuple = (21, 101, 192)):
+        self.set_font("JP", size=8)
+        # ヘッダー
+        self.set_fill_color(*header_color)
+        self.set_text_color(255, 255, 255)
+        for i, (h, w) in enumerate(zip(headers, col_widths)):
+            self.cell(w, 7, h, border=1, fill=True, align="C")
+        self.ln()
+        # データ行
+        self.set_text_color(30, 30, 30)
+        for j, row in enumerate(rows):
+            fill = j % 2 == 1
+            self.set_fill_color(245, 247, 250) if fill else self.set_fill_color(255, 255, 255)
+            for i, (val, w) in enumerate(zip(row, col_widths)):
+                self.cell(w, 6, str(val), border=1, fill=fill, align="C" if i != 2 else "L")
+            self.ln()
+        self.ln(2)
+
+
+def find_font() -> Optional[Path]:
+    for p in FONT_CANDIDATES:
+        if p.exists():
+            return p
+    return None
+
 
 def build_pdf(stats: dict, analysis_text: str, period_label: str, days: int) -> bytes:
-    """レポートPDFをバイト列で返す。"""
-    font_name = _register_japanese_font()
+    font_path = find_font()
+    if font_path is None:
+        raise FileNotFoundError(
+            "日本語フォントが見つかりません。"
+            f"以下のいずれかに配置してください:\n" +
+            "\n".join(str(p) for p in FONT_CANDIDATES)
+        )
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
-        topMargin=20 * mm,
-        bottomMargin=20 * mm,
-    )
-
-    # スタイル定義
-    base = getSampleStyleSheet()
-    style_title = ParagraphStyle(
-        "title", fontName=font_name, fontSize=18, leading=24,
-        alignment=TA_CENTER, textColor=colors.HexColor("#1A237E"),
-        spaceAfter=4 * mm,
-    )
-    style_subtitle = ParagraphStyle(
-        "subtitle", fontName=font_name, fontSize=10,
-        alignment=TA_CENTER, textColor=colors.grey, spaceAfter=6 * mm,
-    )
-    style_h2 = ParagraphStyle(
-        "h2", fontName=font_name, fontSize=13, leading=18,
-        textColor=colors.HexColor("#1565C0"), spaceBefore=6 * mm, spaceAfter=3 * mm,
-    )
-    style_body = ParagraphStyle(
-        "body", fontName=font_name, fontSize=9, leading=14,
-        alignment=TA_LEFT, spaceAfter=2 * mm,
-    )
-    style_small = ParagraphStyle(
-        "small", fontName=font_name, fontSize=8, leading=12,
-        textColor=colors.HexColor("#555555"),
-    )
-
-    story = []
+    pdf = ReportPDF(font_path)
+    pdf.add_page()
 
     # ── タイトル ──
-    story.append(Paragraph("📊 週次品質レポート", style_title))
-    story.append(Paragraph(f"集計期間：{period_label}（直近{days}日間）", style_subtitle))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#BBDEFB")))
-    story.append(Spacer(1, 4 * mm))
+    pdf.set_font("JP", size=18)
+    pdf.set_text_color(26, 35, 126)
+    pdf.cell(0, 12, "週次品質レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+    pdf.set_font("JP", size=10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 7, f"集計期間：{period_label}（直近{days}日間）", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+    pdf.set_draw_color(187, 222, 251)
+    pdf.line(20, pdf.get_y() + 2, 190, pdf.get_y() + 2)
+    pdf.ln(6)
 
-    # ── サマリー表 ──
-    story.append(Paragraph("1. 集計サマリー", style_h2))
-    summary_data = [
-        ["指標", "件数 / 率"],
+    # ── 1. サマリー ──
+    pdf.section_title("1. 集計サマリー")
+    summary_rows = [
         ["総質問数", str(stats["total"])],
-        ["✅ 解決済み", f"{stats['resolved']}件"],
-        ["❌ 未解決", f"{stats['unresolved']}件"],
+        ["解決済み", f"{stats['resolved']}件"],
+        ["未解決", f"{stats['unresolved']}件"],
         ["フィードバックなし", f"{stats['no_feedback']}件"],
         ["解決率", f"{stats['resolution_rate']}%"],
     ]
-    tbl = Table(summary_data, colWidths=[80 * mm, 60 * mm])
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#1565C0")),
-        ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
-        ("FONTNAME",     (0, 0), (-1, -1), font_name),
-        ("FONTSIZE",     (0, 0), (-1, -1), 9),
-        ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F7FA")]),
-        ("GRID",         (0, 0), (-1, -1), 0.5, colors.HexColor("#BBDEFB")),
-        ("TOPPADDING",   (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
-    ]))
-    story.append(tbl)
-    story.append(Spacer(1, 4 * mm))
+    pdf.colored_table(
+        headers=["指標", "件数 / 率"],
+        rows=[[r[0], r[1]] for r in summary_rows],
+        col_widths=[85, 60],
+    )
 
-    # ── 日別質問数 ──
-    story.append(Paragraph("2. 日別質問数", style_h2))
+    # ── 2. 日別質問数 ──
+    pdf.section_title("2. 日別質問数")
     if stats["daily"]:
-        daily_data = [["日付", "件数"]] + [[k, str(v)] for k, v in stats["daily"].items()]
-        dtbl = Table(daily_data, colWidths=[50 * mm, 30 * mm])
-        dtbl.setStyle(TableStyle([
-            ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#42A5F5")),
-            ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
-            ("FONTNAME",     (0, 0), (-1, -1), font_name),
-            ("FONTSIZE",     (0, 0), (-1, -1), 9),
-            ("ALIGN",        (1, 0), (1, -1), "CENTER"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F7FA")]),
-            ("GRID",         (0, 0), (-1, -1), 0.5, colors.HexColor("#BBDEFB")),
-            ("TOPPADDING",   (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 3),
-        ]))
-        story.append(dtbl)
+        pdf.colored_table(
+            headers=["日付", "件数"],
+            rows=[[k, str(v)] for k, v in stats["daily"].items()],
+            col_widths=[50, 30],
+            header_color=(66, 165, 245),
+        )
     else:
-        story.append(Paragraph("（該当データなし）", style_body))
-    story.append(Spacer(1, 4 * mm))
+        pdf.body_text("（該当データなし）")
 
-    # ── 未解決質問一覧 ──
-    story.append(Paragraph("3. 未解決・要確認の質問一覧", style_h2))
+    # ── 3. 未解決一覧 ──
+    pdf.section_title("3. 未解決・要確認の質問一覧")
     problem_rows = stats["problem_rows"]
     if problem_rows:
-        prob_data = [["#", "日時", "質問（抜粋）", "フィードバック"]]
+        table_rows = []
         for i, r in enumerate(problem_rows[:20], 1):
-            q_short = r["question"][:30] + ("…" if len(r["question"]) > 30 else "")
+            q = r["question"][:28] + ("…" if len(r["question"]) > 28 else "")
             fb = r.get("feedback") or "なし"
-            prob_data.append([str(i), r["timestamp"][:16], q_short, fb])
-        ptbl = Table(prob_data, colWidths=[8 * mm, 32 * mm, 95 * mm, 18 * mm])
-        ptbl.setStyle(TableStyle([
-            ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#EF5350")),
-            ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
-            ("FONTNAME",     (0, 0), (-1, -1), font_name),
-            ("FONTSIZE",     (0, 0), (-1, -1), 8),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FFF5F5")]),
-            ("GRID",         (0, 0), (-1, -1), 0.5, colors.HexColor("#FFCDD2")),
-            ("TOPPADDING",   (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 3),
-            ("WORDWRAP",     (2, 1), (2, -1), True),
-        ]))
-        story.append(ptbl)
+            table_rows.append([str(i), r["timestamp"][:16], q, fb])
+        pdf.colored_table(
+            headers=["#", "日時", "質問（抜粋）", "FB"],
+            rows=table_rows,
+            col_widths=[8, 35, 100, 17],
+            header_color=(239, 83, 80),
+        )
     else:
-        story.append(Paragraph("✅ 未解決の質問はありませんでした。", style_body))
-    story.append(Spacer(1, 4 * mm))
+        pdf.body_text("未解決の質問はありませんでした。")
 
-    # ── AI 分析 ──
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#BBDEFB")))
-    story.append(Paragraph("4. AI改善アドバイス（Claude分析）", style_h2))
-    # Markdown の ## を除去してParagraphに渡す
-    clean_analysis = analysis_text.replace("##", "").replace("**", "")
-    for line in clean_analysis.split("\n"):
-        line = line.strip()
+    # ── 4. AI分析 ──
+    pdf.section_title("4. AI改善アドバイス（Claude分析）")
+    # 実効幅 = A4幅(210) - 左右マージン(20*2) = 170mm
+    effective_w = 170
+
+    import re as _re
+    def _strip_md(text: str) -> str:
+        """Markdownの **太字** / # 見出し記号を除去する。"""
+        text = _re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)  # **bold** → bold
+        text = _re.sub(r'^#+\s*', '', text)                      # # heading → heading
+        text = text.replace("---", "")
+        return text.strip()
+
+    for line in analysis_text.split("\n"):
+        line = _strip_md(line)
         if not line:
-            story.append(Spacer(1, 2 * mm))
+            pdf.ln(2)
+        elif line.startswith("【"):
+            pdf.set_font("JP", size=10)
+            pdf.set_text_color(21, 101, 192)
+            pdf.multi_cell(effective_w, 7, line)
+            pdf.set_text_color(30, 30, 30)
         else:
-            story.append(Paragraph(line, style_body))
+            pdf.set_font("JP", size=9)
+            pdf.multi_cell(effective_w, 6, line)
 
-    story.append(Spacer(1, 6 * mm))
-    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph(
-        f"生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M')}　｜　Q&Ai コールセンター品質管理レポート",
-        style_small,
-    ))
-
-    doc.build(story)
-    return buf.getvalue()
+    return bytes(pdf.output())
 
 
 # ---------- Slack 送信 ----------
 
 def send_to_slack(pdf_bytes: bytes, filename: str, stats: dict, period_label: str) -> bool:
-    """Slack Incoming Webhook + files.getUploadURLExternal でPDFを送信する。"""
     webhook_url = os.getenv("SLACK_WEBHOOK_URL")
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     slack_channel = os.getenv("SLACK_CHANNEL", "#general")
@@ -341,10 +322,9 @@ def send_to_slack(pdf_bytes: bytes, filename: str, stats: dict, period_label: st
         print("[WARN] SLACK_WEBHOOK_URL が未設定です。Slack送信をスキップします。")
         return False
 
-    # ── テキスト通知（Webhook）──
     rate_emoji = "✅" if stats["resolution_rate"] >= 80 else "⚠️" if stats["resolution_rate"] >= 60 else "🚨"
     text = (
-        f"*📊 週次品質レポート*　{period_label}\n"
+        f"*週次品質レポート*　{period_label}\n"
         f"```\n"
         f"総質問数       : {stats['total']}件\n"
         f"解決済み       : {stats['resolved']}件\n"
@@ -356,15 +336,13 @@ def send_to_slack(pdf_bytes: bytes, filename: str, stats: dict, period_label: st
     try:
         resp = httpx.post(webhook_url, json={"text": text}, timeout=10)
         resp.raise_for_status()
-        print(f"[OK] Slack テキスト通知送信完了")
+        print("[OK] Slack テキスト通知送信完了")
     except Exception as e:
         print(f"[ERROR] Slack Webhook 送信失敗: {e}")
         return False
 
-    # ── PDF ファイル添付（Bot Token がある場合のみ）──
     if slack_token:
         try:
-            # Step1: アップロードURL取得
             r1 = httpx.post(
                 "https://slack.com/api/files.getUploadURLExternal",
                 headers={"Authorization": f"Bearer {slack_token}"},
@@ -375,35 +353,22 @@ def send_to_slack(pdf_bytes: bytes, filename: str, stats: dict, period_label: st
             j1 = r1.json()
             if not j1.get("ok"):
                 print(f"[ERROR] files.getUploadURLExternal: {j1.get('error')}")
-                return True  # テキスト通知は成功しているので True
-
-            upload_url = j1["upload_url"]
-            file_id    = j1["file_id"]
-
-            # Step2: ファイルアップロード
-            r2 = httpx.post(upload_url, content=pdf_bytes, timeout=30)
+                return True
+            r2 = httpx.post(j1["upload_url"], content=pdf_bytes, timeout=30)
             r2.raise_for_status()
-
-            # Step3: チャンネルに公開
             r3 = httpx.post(
                 "https://slack.com/api/files.completeUploadExternal",
                 headers={"Authorization": f"Bearer {slack_token}"},
-                json={
-                    "files": [{"id": file_id, "title": filename}],
-                    "channel_id": slack_channel,
-                },
+                json={"files": [{"id": j1["file_id"], "title": filename}], "channel_id": slack_channel},
                 timeout=15,
             )
             r3.raise_for_status()
-            j3 = r3.json()
-            if j3.get("ok"):
+            if r3.json().get("ok"):
                 print(f"[OK] PDF ファイル送信完了: {filename}")
-            else:
-                print(f"[WARN] PDF送信部分失敗: {j3.get('error')}")
         except Exception as e:
             print(f"[WARN] PDF添付失敗（テキスト通知は送信済み）: {e}")
     else:
-        print("[INFO] SLACK_BOT_TOKEN 未設定のためPDF添付スキップ（テキスト通知のみ）")
+        print("[INFO] SLACK_BOT_TOKEN 未設定のためPDF添付スキップ")
 
     return True
 
@@ -411,40 +376,35 @@ def send_to_slack(pdf_bytes: bytes, filename: str, stats: dict, period_label: st
 # ---------- メイン ----------
 
 def run(days: int = 7, dry_run: bool = False) -> tuple[bool, str]:
-    """
-    レポートを生成して Slack 送信する。
-    戻り値: (成功フラグ, メッセージ)
-    """
     print(f"[START] 週次レポート生成 (直近{days}日)")
 
-    # 1. データ読み込み
     rows = load_csv(days)
     if not rows:
         msg = f"直近{days}日のログがありません。レポート生成をスキップします。"
         print(f"[INFO] {msg}")
         return False, msg
 
-    # 2. 集計
     stats = aggregate(rows)
     print(f"[INFO] 集計完了: {stats['total']}件 / 解決率 {stats['resolution_rate']}%")
 
-    # 3. AI 分析
     print("[INFO] AI分析中...")
     analysis = ai_analysis(rows, stats)
 
-    # 4. PDF 生成
     now = datetime.now()
     period_label = f"{(now - timedelta(days=days)).strftime('%Y/%m/%d')} 〜 {now.strftime('%Y/%m/%d')}"
-    pdf_bytes = build_pdf(stats, analysis, period_label, days)
-    filename = f"qai_weekly_report_{now.strftime('%Y%m%d')}.pdf"
 
-    # 5. PDF 保存（ローカル）
+    print("[INFO] PDF生成中...")
+    try:
+        pdf_bytes = build_pdf(stats, analysis, period_label, days)
+    except FileNotFoundError as e:
+        return False, str(e)
+
+    filename = f"qai_weekly_report_{now.strftime('%Y%m%d')}.pdf"
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     pdf_path = REPORT_DIR / filename
     pdf_path.write_bytes(pdf_bytes)
     print(f"[INFO] PDF保存: {pdf_path}")
 
-    # 6. Slack 送信
     if dry_run:
         print("[DRY-RUN] Slack送信をスキップしました。PDFはローカルに保存されています。")
         return True, f"PDF生成完了（dry-run）: {pdf_path}"
