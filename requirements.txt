@@ -3,3 +3,5 @@ httpx
 python-dotenv
 notion-client
 streamlit
+gspread
+google-auth

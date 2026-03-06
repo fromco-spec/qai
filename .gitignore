@@ -1,5 +1,8 @@
 # 機密情報（絶対にコミットしない）
 .env
+*service_account*.json
+*-credentials.json
+*-key.json
 
 # ローカルキャッシュ・ログ（GitHub には不要）
 data/knowledge.txt
