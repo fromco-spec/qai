@@ -263,7 +263,7 @@ def retrieve_knowledge(question: str, records: dict) -> tuple[str, list[str]]:
         f"商品詳細{retrieved_counts.get('products',0)}件 / "
         f"拡張クエリ: {expanded_query[:60]}{'…' if len(expanded_query) > 60 else ''}]"
     )
-    knowledge_text = f"{summary_line}\n優先順位: 施策 > マニュアル > 料金表\n\n{body}"
+    knowledge_text = f"{summary_line}\n優先順位: 施策 > マニュアル > 料金表 > 商品詳細\n\n{body}"
     return knowledge_text, ref_ids
 
 
@@ -289,8 +289,9 @@ SYSTEM_PROMPT_TEMPLATE = """\
 - 「円」だけで終わらせない。税込・送料の扱いを必ずセットで記載する。
 
 ### ③ 優先順位
-1. 知識ベースを必ず参照し、「施策 → マニュアル → 料金表」の優先順位で回答する。
-2. マニュアルと施策で情報が矛盾する場合は、まずマニュアルの標準ルールを回答し、
+1. 知識ベースを必ず参照し、「施策 → マニュアル → 料金表 → 商品詳細」の優先順位で回答する。
+2. 商品の成分・原材料・特徴・こだわり・使い方・QAに関する質問は【商品詳細】セクションを必ず参照する。
+3. マニュアルと施策で情報が矛盾する場合は、まずマニュアルの標準ルールを回答し、
    「ただし、現在〇〇の施策が適用されている場合は例外となります」と添える。
 
 ### ④ 回答スタイル
