@@ -6,6 +6,7 @@ Streamlit製チャット＆管理画面。
   streamlit run app.py
 """
 
+import concurrent.futures
 import csv
 import json
 import os
@@ -46,11 +47,11 @@ LOG_FILE          = LOGS_DIR / "chat_log.json"
 CHAT_HISTORY_CSV  = LOGS_DIR / "chat_history_log.csv"   # ③ PDCA用ログ
 LAST_SYNC_FILE    = DATA_DIR / "last_sync.txt"          # 施策同期完了日時
 
-# RAG設定
-RAG_TOP_POLICY   = 20   # 施策：スコア上位件数
-RAG_TOP_MANUAL   = 30   # マニュアル：スコア上位件数
-RAG_TOP_PRICING  = 10   # 料金表：スコア上位件数
-RAG_TOP_PRODUCTS = 10   # 商品詳細：スコア上位件数
+# RAG設定（件数を絞ることでトークン数を削減し応答速度を向上）
+RAG_TOP_POLICY   = 10   # 施策：スコア上位件数
+RAG_TOP_MANUAL   = 15   # マニュアル：スコア上位件数
+RAG_TOP_PRICING  =  5   # 料金表：スコア上位件数
+RAG_TOP_PRODUCTS =  5   # 商品詳細：スコア上位件数
 
 st.set_page_config(
     page_title="コールセンター AIアシスタント",
@@ -522,27 +523,30 @@ def save_log(log: list):
 
 # ---------- Claude API ----------
 
-def get_answer(question: str, knowledge: str, history: list = None) -> str:
+def get_answer(question: str, knowledge: str, history: list = None):
     """
     history: [{"role": "user"|"assistant", "content": str}, ...] の過去の会話履歴。
     Noneの場合は単発質問として扱う。
+    ストリーミングでトークンを逐次 yield する。
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        return "[ERROR] ANTHROPIC_API_KEY が未設定です"
+        yield "[ERROR] ANTHROPIC_API_KEY が未設定です"
+        return
     client = anthropic.Anthropic(api_key=api_key)
     system = SYSTEM_PROMPT_TEMPLATE.format(knowledge=knowledge)
     messages = []
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": question})
-    resp = client.messages.create(
-        model="claude-opus-4-5-20251101",
-        max_tokens=1024,
+    with client.messages.stream(
+        model="claude-sonnet-4-5",
+        max_tokens=512,
         system=system,
         messages=messages,
-    )
-    return resp.content[0].text
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
 
 
 # ---------- ページ: チャット ----------
@@ -565,9 +569,8 @@ def _submit_question(question: str, records: dict, use_history: bool = False):
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("🔍 知識ベースを検索して回答を生成中..."):
-            answer = get_answer(question, knowledge, history)
-        st.markdown(answer)
+        # ストリーミング表示：最初のトークンが来た瞬間から表示開始
+        answer = st.write_stream(get_answer(question, knowledge, history))
 
     entry_id  = str(uuid.uuid4())
     timestamp = datetime.now().isoformat(timespec="seconds")
