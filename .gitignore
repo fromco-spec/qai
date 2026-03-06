@@ -4,6 +4,11 @@
 *-credentials.json
 *-key.json
 
+# 仮想環境（ローカルのみ・GitHubには不要）
+.venv/
+venv/
+env/
+
 # ローカルキャッシュ・ログ（GitHub には不要）
 data/knowledge.txt
 logs/
