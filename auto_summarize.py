@@ -366,7 +366,7 @@ def needs_update(page: dict, db_type: str) -> tuple[bool, str]:
         if last_edited_str:
             last_edited = parse_iso(last_edited_str)
             if summary_updated_str:
-                summary_updated = parse_iso(summary_updated_str + "T00:00:00+00:00"
+                summary_updated = parse_iso(summary_updated_str + "T23:59:59+00:00"
                                             if "T" not in summary_updated_str else summary_updated_str)
                 if last_edited > summary_updated:
                     return True, f"ページ更新({last_edited_str[:10]}) > サマリー更新({summary_updated_str[:10]})"
