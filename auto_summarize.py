@@ -356,26 +356,8 @@ def needs_update(page: dict, db_type: str) -> tuple[bool, str]:
     if not current_summary:
         return True, "サマリー空欄"
 
-    # ② 施策DBのみ: last_edited_time > サマリー最終更新
-    if db_type == "policy":
-        last_edited_str = page.get("last_edited_time", "")
-        summary_updated_prop = props.get("サマリー最終更新", {})
-        summary_date = summary_updated_prop.get("date") or {}
-        summary_updated_str = summary_date.get("start", "")
-
-        if last_edited_str:
-            last_edited = parse_iso(last_edited_str)
-            if summary_updated_str:
-                summary_updated = parse_iso(summary_updated_str + "T23:59:59+00:00"
-                                            if "T" not in summary_updated_str else summary_updated_str)
-                if last_edited > summary_updated:
-                    return True, f"ページ更新({last_edited_str[:10]}) > サマリー更新({summary_updated_str[:10]})"
-            else:
-                # サマリーはあるがサマリー最終更新日が未設定 → 更新対象
-                return True, "サマリー最終更新日未設定"
-
-    # ③ マニュアル・料金表: ページの最終編集日時 > 前回サマリー生成日時 なら更新対象
-    if db_type in ("manual", "pricing"):
+    # ② 施策・マニュアル・料金表: ページの最終編集日時 > 前回サマリー生成日時 なら更新対象
+    if db_type in ("policy", "manual", "pricing"):
         # 「最終更新日時」プロパティ（last_edited_time 型）を優先、なければページ本体の last_edited_time
         last_edited_prop = props.get("最終更新日時", {})
         last_edited_str  = (last_edited_prop.get("last_edited_time", "")
@@ -455,9 +437,8 @@ def process_db(db_type: str, db_id: str, client: anthropic.Anthropic,
         stats["total"] += 1
         time.sleep(REQUEST_INTERVAL)
 
-    # マニュアル・料金表は処理完了後に「前回実行日時」を記録する
-    # （次回起動時の比較基準になる）
-    if db_type in ("manual", "pricing") and not dry_run and stats["success"] > 0:
+    # 処理完了後に「前回実行日時」を記録する（次回起動時の比較基準になる）
+    if not dry_run and stats["success"] > 0:
         write_summary_last_run(dry_run=dry_run)
 
 
