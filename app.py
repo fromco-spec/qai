@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
+import google.generativeai as genai
 import streamlit as st
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
@@ -52,6 +53,23 @@ RAG_TOP_POLICY   = 10   # 施策：スコア上位件数
 RAG_TOP_MANUAL   = 15   # マニュアル：スコア上位件数
 RAG_TOP_PRICING  =  5   # 料金表：スコア上位件数
 RAG_TOP_PRODUCTS =  5   # 商品詳細：スコア上位件数
+
+# ---------- Gemini 音声認識 ----------
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
+    """Gemini APIで音声をテキストに変換する"""
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY が設定されていません")
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    audio_part = {"mime_type": mime_type, "data": audio_bytes}
+    response = model.generate_content([
+        audio_part,
+        "この音声をそのまま日本語テキストに書き起こしてください。"
+        "書き起こし結果のみを出力し、説明や前置きは不要です。",
+    ])
+    return response.text.strip()
 
 st.set_page_config(
     page_title="コールセンター AIアシスタント",
@@ -627,6 +645,8 @@ def page_chat():
         st.session_state.log = load_log()
     if "deepdive_id" not in st.session_state:
         st.session_state.deepdive_id = None
+    if "voice_text" not in st.session_state:
+        st.session_state.voice_text = ""
 
     # ウェルカムメッセージ（会話がまだない場合）
     if not st.session_state.messages:
@@ -659,8 +679,41 @@ def page_chat():
 
     # 通常入力欄
     else:
+        # 音声入力エリア（GeminiAPIキーがある場合のみ表示）
+        if GEMINI_API_KEY:
+            with st.expander("🎤 音声で質問する", expanded=False):
+                st.caption("マイクボタンを押して話しかけてください。録音後に自動でテキスト変換します。")
+                audio_input = st.audio_input("録音する", key="audio_recorder")
+                if audio_input is not None:
+                    with st.spinner("音声を変換中..."):
+                        try:
+                            audio_bytes = audio_input.read()
+                            transcribed = transcribe_audio_gemini(audio_bytes, mime_type="audio/wav")
+                            st.session_state.voice_text = transcribed
+                            st.success(f"変換結果: 「{transcribed}」")
+                            st.caption("👇 そのまま送信するか、下のテキスト入力欄で修正してから送信できます")
+                        except Exception as e:
+                            st.error(f"音声変換エラー: {e}")
+
+            # 音声変換結果がある場合、送信ボタンを表示
+            if st.session_state.voice_text:
+                col_text, col_btn = st.columns([5, 1])
+                with col_text:
+                    edited_text = st.text_input(
+                        "音声入力の内容（修正可能）",
+                        value=st.session_state.voice_text,
+                        key="voice_edit_input",
+                        label_visibility="collapsed",
+                    )
+                with col_btn:
+                    if st.button("送信", key="voice_send_btn", use_container_width=True, type="primary"):
+                        st.session_state.voice_text = ""
+                        _submit_question(edited_text, records, use_history=False)
+                        st.rerun()
+
         question = st.chat_input("質問を入力してください（例：返品の手続きを教えて）...")
         if question:
+            st.session_state.voice_text = ""
             _submit_question(question, records, use_history=False)
             st.rerun()
 
