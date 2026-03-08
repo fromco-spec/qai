@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
-import google.generativeai as genai
+from google import genai as google_genai
 import streamlit as st
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
@@ -61,14 +61,28 @@ def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") ->
     """Gemini APIで音声をテキストに変換する"""
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY が設定されていません")
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    audio_part = {"mime_type": mime_type, "data": audio_bytes}
-    response = model.generate_content([
-        audio_part,
-        "この音声をそのまま日本語テキストに書き起こしてください。"
-        "書き起こし結果のみを出力し、説明や前置きは不要です。",
-    ])
+    client = google_genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[
+            {
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": audio_bytes,
+                        }
+                    },
+                    {
+                        "text": (
+                            "この音声をそのまま日本語テキストに書き起こしてください。"
+                            "書き起こし結果のみを出力し、説明や前置きは不要です。"
+                        )
+                    },
+                ]
+            }
+        ],
+    )
     return response.text.strip()
 
 st.set_page_config(
