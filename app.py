@@ -77,12 +77,21 @@ def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") ->
                     },
                     {
                         "text": (
-                            "あなたはコールセンターのオペレーター向け音声認識システムです。"
-                            "以下の音声を正確に日本語テキストに書き起こしてください。\n\n"
-                            "【重要】この音声はコールセンター業務に関する質問です。"
-                            "よく出てくる言葉: 返品、解約、定期便、キャンセル、料金、コース変更、"
-                            "スラヘル、オモニストン、シロッシュ、デイリーワン、するるん緑茶、"
-                            "サラフィネ、ばぶりーキッズ、引き上げ、掘り起こし、アウトバウンド。\n\n"
+                            "あなたはコールセンターのオペレーター向け音声認識システムです。\n\n"
+                            "【最重要：話者の特定】\n"
+                            "この音声にはコールセンター内の複数の声が含まれている場合があります。"
+                            "必ずマイクに最も近い・最も音量が大きい単一話者（＝マイクを持っているオペレーター本人）の"
+                            "発言のみを書き起こしてください。\n"
+                            "背後や遠くから聞こえる他の人の声・環境音・隣席の会話は無視してください。\n\n"
+                            "【業務コンテキスト】この音声はコールセンター業務に関する質問です。\n\n"
+                            "【重要：固有名詞は必ずカタカナで表記すること】\n"
+                            "以下の会社名・商品名は漢字・ひらがな・英語に変換せず、必ず以下のカタカナ表記を使うこと:\n"
+                            "フロムココロ（会社名。「フロム心」「from心」「フロムこころ」等に変換しない）、"
+                            "スラヘル、オモニストン、シロッシュ、デイリーワン、"
+                            "するるん緑茶（「するるん」はカタカナ）、サラフィネ、ばぶりーキッズ、"
+                            "ベントール、キントルネ、シボリマックス。\n\n"
+                            "よく出てくる業務用語: 返品、解約、定期便、キャンセル、料金、コース変更、"
+                            "引き上げ、掘り起こし、アウトバウンド。\n\n"
                             "書き起こし結果のテキストのみを出力してください。説明や前置きは不要です。"
                         )
                     },
@@ -580,7 +589,7 @@ def get_answer(question: str, knowledge: str, history: list = None):
     messages.append({"role": "user", "content": question})
     with client.messages.stream(
         model="claude-sonnet-4-5",
-        max_tokens=512,
+        max_tokens=2048,
         system=system,
         messages=messages,
     ) as stream:
@@ -668,6 +677,18 @@ def page_chat():
         st.session_state.deepdive_id = None
     if "voice_text" not in st.session_state:
         st.session_state.voice_text = ""
+    if "voice_error" not in st.session_state:
+        st.session_state.voice_error = ""
+    if "voice_pending" not in st.session_state:
+        st.session_state.voice_pending = ""
+    if "voice_recorder_key" not in st.session_state:
+        st.session_state.voice_recorder_key = 0
+    if "voice_last_size" not in st.session_state:
+        st.session_state.voice_last_size = -1
+    if "voice_text_dd" not in st.session_state:
+        st.session_state.voice_text_dd = ""
+    if "voice_pending_dd" not in st.session_state:
+        st.session_state.voice_pending_dd = ""
 
     # ウェルカムメッセージ（会話がまだない場合）
     if not st.session_state.messages:
@@ -689,6 +710,61 @@ def page_chat():
     if st.session_state.deepdive_id:
         st.divider()
         st.caption("💬 前の回答をふまえて、さらに質問できます")
+
+        # 深掘りモードでも音声入力を表示
+        if GEMINI_API_KEY:
+            with st.expander("🎤 音声で質問する", expanded=True):
+                st.caption("マイクボタンを押して話しかけてください。録音後に自動でテキスト変換します。")
+                audio_input_dd = st.audio_input(
+                    "🔴 録音する（再録音する場合もここから）",
+                    key=f"audio_recorder_dd_{st.session_state.voice_recorder_key}"
+                )
+                if audio_input_dd is not None:
+                    new_size = len(audio_input_dd.read())
+                    audio_input_dd.seek(0)
+                    dd_size_key = "voice_last_size_dd"
+                    if new_size != st.session_state.get(dd_size_key, -1):
+                        st.session_state[dd_size_key] = new_size
+                        with st.spinner("音声を変換中..."):
+                            try:
+                                audio_bytes = audio_input_dd.read()
+                                mime_type = getattr(audio_input_dd, "type", None) or "audio/wav"
+                                transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime_type)
+                                st.session_state.voice_text_dd = transcribed
+                                st.session_state.voice_error = ""
+                            except Exception as e:
+                                st.session_state.voice_error = str(e)
+                        st.rerun()
+
+                if st.session_state.voice_error:
+                    st.error(f"音声変換エラー: {st.session_state.voice_error}")
+                    st.session_state.voice_error = ""
+
+                if st.session_state.get("voice_text_dd"):
+                    st.caption("↓ 変換結果（修正してから送信できます）")
+                    col_text_dd, col_send_dd = st.columns([5, 1])
+                    with col_text_dd:
+                        edited_dd = st.text_input(
+                            "音声入力の内容（修正可能）",
+                            value=st.session_state.voice_text_dd,
+                            key="voice_edit_dd",
+                            label_visibility="collapsed",
+                        )
+                    with col_send_dd:
+                        if st.button("送信", key="voice_send_dd_btn", use_container_width=True, type="primary"):
+                            st.session_state.voice_pending_dd = edited_dd
+                            st.session_state.voice_text_dd = ""
+                            st.session_state[dd_size_key] = -1
+                            st.rerun()
+
+        # 音声深掘り送信（columnsの外で実行）
+        if st.session_state.get("voice_pending_dd"):
+            q = st.session_state.voice_pending_dd
+            st.session_state.voice_pending_dd = ""
+            st.session_state.deepdive_id = None
+            _submit_question(q, records, use_history=True)
+            st.rerun()
+
         deepdive_q = st.chat_input(
             "深掘り質問を入力してください...",
             key="deepdive_input",
@@ -702,36 +778,63 @@ def page_chat():
     else:
         # 音声入力エリア（GeminiAPIキーがある場合のみ表示）
         if GEMINI_API_KEY:
-            with st.expander("🎤 音声で質問する", expanded=False):
+            with st.expander("🎤 音声で質問する", expanded=True):
                 st.caption("マイクボタンを押して話しかけてください。録音後に自動でテキスト変換します。")
-                audio_input = st.audio_input("録音する", key="audio_recorder")
-                if audio_input is not None:
-                    with st.spinner("音声を変換中..."):
-                        try:
-                            audio_bytes = audio_input.read()
-                            mime_type = getattr(audio_input, "type", None) or "audio/wav"
-                            transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime_type)
-                            st.session_state.voice_text = transcribed
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"音声変換エラー: {e}")
 
-            # 音声変換結果がある場合、テキスト編集欄＋送信ボタンを表示
-            if st.session_state.voice_text:
-                col_text, col_btn = st.columns([5, 1])
-                with col_text:
-                    edited_text = st.text_input(
-                        "音声入力の内容（修正可能）",
-                        value=st.session_state.voice_text,
-                        key="voice_edit_input",
-                        label_visibility="collapsed",
-                    )
-                with col_btn:
-                    if st.button("送信", key="voice_send_btn", use_container_width=True, type="primary"):
-                        q = edited_text
-                        st.session_state.voice_text = ""
-                        _submit_question(q, records, use_history=False)
+                # 録音エリアは常に表示（テキスト表示中も再録音できる）
+                audio_input = st.audio_input(
+                    "🔴 録音する（再録音する場合もここから）",
+                    key=f"audio_recorder_{st.session_state.voice_recorder_key}"
+                )
+
+                # 新しい録音が来たら変換（voice_textの有無に関わらず上書き）
+                if audio_input is not None:
+                    # 前回と同じデータでなければ変換（サイズで簡易判定）
+                    new_size = len(audio_input.read())
+                    audio_input.seek(0)  # 読み込みポインタをリセット
+                    if new_size != st.session_state.get("voice_last_size", -1):
+                        st.session_state.voice_last_size = new_size
+                        with st.spinner("音声を変換中..."):
+                            try:
+                                audio_bytes = audio_input.read()
+                                mime_type = getattr(audio_input, "type", None) or "audio/wav"
+                                transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime_type)
+                                st.session_state.voice_text = transcribed
+                                st.session_state.voice_error = ""
+                            except Exception as e:
+                                st.session_state.voice_error = str(e)
                         st.rerun()
+
+                # エラー表示
+                if st.session_state.voice_error:
+                    st.error(f"音声変換エラー: {st.session_state.voice_error}")
+                    st.session_state.voice_error = ""
+
+                # 変換結果とボタンをエキスパンダー内に表示
+                if st.session_state.voice_text:
+                    st.caption("↓ 変換結果（修正してから送信できます）")
+                    col_text, col_send = st.columns([5, 1])
+                    with col_text:
+                        edited_text = st.text_input(
+                            "音声入力の内容（修正可能）",
+                            value=st.session_state.voice_text,
+                            key="voice_edit_input",
+                            label_visibility="collapsed",
+                        )
+                    with col_send:
+                        if st.button("送信", key="voice_send_btn", use_container_width=True, type="primary"):
+                            st.session_state.voice_pending = edited_text
+                            st.session_state.voice_text = ""
+                            st.session_state.voice_last_size = -1
+                            st.session_state.voice_recorder_key += 1
+                            st.rerun()
+
+        # 音声送信の実行（columnsの外で呼ぶことでチャットレイアウトが崩れない）
+        if st.session_state.get("voice_pending"):
+            q = st.session_state.voice_pending
+            st.session_state.voice_pending = ""
+            _submit_question(q, records, use_history=False)
+            st.rerun()
 
         question = st.chat_input("質問を入力してください（例：返品の手続きを教えて）...")
         if question:
