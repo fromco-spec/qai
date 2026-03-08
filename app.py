@@ -77,8 +77,13 @@ def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") ->
                     },
                     {
                         "text": (
-                            "この音声をそのまま日本語テキストに書き起こしてください。"
-                            "書き起こし結果のみを出力し、説明や前置きは不要です。"
+                            "あなたはコールセンターのオペレーター向け音声認識システムです。"
+                            "以下の音声を正確に日本語テキストに書き起こしてください。\n\n"
+                            "【重要】この音声はコールセンター業務に関する質問です。"
+                            "よく出てくる言葉: 返品、解約、定期便、キャンセル、料金、コース変更、"
+                            "スラヘル、オモニストン、シロッシュ、デイリーワン、するるん緑茶、"
+                            "サラフィネ、ばぶりーキッズ、引き上げ、掘り起こし、アウトバウンド。\n\n"
+                            "書き起こし結果のテキストのみを出力してください。説明や前置きは不要です。"
                         )
                     },
                 ]
@@ -704,16 +709,14 @@ def page_chat():
                     with st.spinner("音声を変換中..."):
                         try:
                             audio_bytes = audio_input.read()
-                            # MIMEタイプをStreamlitのUploadedFileオブジェクトから自動取得
                             mime_type = getattr(audio_input, "type", None) or "audio/wav"
                             transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime_type)
                             st.session_state.voice_text = transcribed
-                            st.success(f"変換結果: 「{transcribed}」")
-                            st.caption("👇 そのまま送信するか、下のテキスト入力欄で修正してから送信できます")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"音声変換エラー: {e}")
 
-            # 音声変換結果がある場合、送信ボタンを表示
+            # 音声変換結果がある場合、テキスト編集欄＋送信ボタンを表示
             if st.session_state.voice_text:
                 col_text, col_btn = st.columns([5, 1])
                 with col_text:
@@ -725,8 +728,9 @@ def page_chat():
                     )
                 with col_btn:
                     if st.button("送信", key="voice_send_btn", use_container_width=True, type="primary"):
+                        q = edited_text
                         st.session_state.voice_text = ""
-                        _submit_question(edited_text, records, use_history=False)
+                        _submit_question(q, records, use_history=False)
                         st.rerun()
 
         question = st.chat_input("質問を入力してください（例：返品の手続きを教えて）...")
