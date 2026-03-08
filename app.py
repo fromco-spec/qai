@@ -59,9 +59,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
     """Gemini APIで音声をテキストに変換する"""
+    import base64
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY が設定されていません")
     client = google_genai.Client(api_key=GEMINI_API_KEY)
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
     response = client.models.generate_content(
         model="gemini-2.0-flash",
         contents=[
@@ -70,7 +72,7 @@ def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") ->
                     {
                         "inline_data": {
                             "mime_type": mime_type,
-                            "data": audio_bytes,
+                            "data": audio_b64,
                         }
                     },
                     {
@@ -702,7 +704,9 @@ def page_chat():
                     with st.spinner("音声を変換中..."):
                         try:
                             audio_bytes = audio_input.read()
-                            transcribed = transcribe_audio_gemini(audio_bytes, mime_type="audio/wav")
+                            # MIMEタイプをStreamlitのUploadedFileオブジェクトから自動取得
+                            mime_type = getattr(audio_input, "type", None) or "audio/wav"
+                            transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime_type)
                             st.session_state.voice_text = transcribed
                             st.success(f"変換結果: 「{transcribed}」")
                             st.caption("👇 そのまま送信するか、下のテキスト入力欄で修正してから送信できます")
