@@ -1006,7 +1006,33 @@ def page_admin():
         ).set_index("日付")
         st.bar_chart(df_daily)
 
+    # --- TOP10 頻出キーワード ---
+    st.divider()
+    st.subheader("🔑 頻出キーワード TOP10")
+    import re, pandas as pd
+    STOP_WORDS = {
+        "は","が","を","に","の","で","と","も","な","て","た","だ","か","し","する",
+        "この","その","どの","どう","ください","教えて","について","場合","方法",
+        "どうすれば","したい","したら","できる","ありますか","ありません","います",
+        "いますか","お願い","よい","いい","ですか","でしょうか","なんですが",
+        "なのですが","どれ","それ","これ","あれ","ここ","そこ","あそこ","教えてください",
+    }
+    word_counter: Counter = Counter()
+    for e in log:
+        q = e.get("question", "")
+        words = re.findall(r'[^\s\u3000、。！？!?「」【】（）()・]+', q)
+        for w in words:
+            if len(w) >= 2 and w not in STOP_WORDS:
+                word_counter[w] += 1
+    if word_counter:
+        top_words = word_counter.most_common(10)
+        df_words = pd.DataFrame(top_words, columns=["キーワード", "出現回数"]).set_index("キーワード")
+        st.bar_chart(df_words)
+    else:
+        st.info("データが不足しています（質問が蓄積されると表示されます）")
+
     # --- 未解決ログ一覧 ---
+    st.divider()
     st.subheader("未解決の質問一覧")
     unresolved_list = [e for e in log if e.get("feedback") == "unresolved"]
     if unresolved_list:
@@ -1016,6 +1042,28 @@ def page_admin():
                 st.markdown(f"**回答:** {e['answer']}")
     else:
         st.success("未解決の質問はありません")
+
+    # --- AIが回答できなかった質問 ---
+    st.divider()
+    st.subheader("⚠️ AIが回答できなかった可能性がある質問")
+    UNABLE_PATTERNS = [
+        "わかりません", "情報がありません", "見つかりません", "確認できません",
+        "お答えできません", "記載がありません", "対応できません", "把握しておりません",
+        "データがありません", "載っていません", "ございません",
+    ]
+    unable_list = [
+        e for e in log
+        if any(p in e.get("answer", "") for p in UNABLE_PATTERNS)
+        and e.get("feedback") != "resolved"
+    ]
+    if unable_list:
+        st.caption(f"{len(unable_list)}件検出。Notionへの情報追加を検討してください。")
+        for e in sorted(unable_list, key=lambda x: x["timestamp"], reverse=True):
+            with st.expander(f"[{e['timestamp']}] {e['question'][:60]}"):
+                st.markdown(f"**質問:** {e['question']}")
+                st.markdown(f"**回答（抜粋）:** {e['answer'][:300]}")
+    else:
+        st.success("回答できなかった質問は検出されませんでした")
 
     # --- Google Sheets リンク ---
     st.divider()
