@@ -689,6 +689,14 @@ def _submit_question(question: str, records: dict, use_history: bool = False):
     history = _get_api_history() if use_history else None
     knowledge, ref_ids = retrieve_knowledge(question, records)   # ③ ref_ids を受け取る
 
+    # ID → タイトル名のマッピングを構築
+    id_to_title: dict = {}
+    for recs in records.values():
+        for r in recs:
+            if r.get("id"):
+                id_to_title[str(r["id"])] = r.get("title", str(r["id"]))
+    ref_titles = [id_to_title.get(rid, rid) for rid in ref_ids]
+
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
@@ -706,7 +714,7 @@ def _submit_question(question: str, records: dict, use_history: bool = False):
         "id":           entry_id,
         "timestamp":    timestamp,
         "question":     question,
-        "ref_ids":      ref_ids,
+        "ref_titles":   ref_titles,
         "show_feedback": True,
     })
 
@@ -716,7 +724,7 @@ def _submit_question(question: str, records: dict, use_history: bool = False):
         "timestamp": timestamp,
         "question":  question,
         "answer":    answer,
-        "ref_ids":   "|".join(ref_ids),
+        "ref_ids":   "|".join(ref_titles),   # タイトル名で保存
         "feedback":  "",
     }
     st.session_state.log.append(entry)
@@ -781,6 +789,9 @@ def page_chat():
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if msg["role"] == "assistant" and msg.get("ref_titles"):
+                titles = msg["ref_titles"]
+                st.caption("📎 参照元: " + " / ".join(titles))
         if msg["role"] == "assistant" and msg.get("show_feedback"):
             _render_feedback(msg["id"])
 
