@@ -1026,6 +1026,11 @@ def _render_feedback(entry_id: str):
                         st.session_state.pop(k, None)
                     st.rerun()
 
+        st.markdown(
+            "<hr style='border: none; border-top: 2px solid #FF6D00; margin: 16px 0 12px 0;'>",
+            unsafe_allow_html=True,
+        )
+
 
 def _update_feedback(entry_id: str, value: str):
     for entry in st.session_state.log:
