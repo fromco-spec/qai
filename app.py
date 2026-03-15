@@ -605,20 +605,17 @@ def load_log() -> list:
 
 
 def append_log_to_sheets(entry: dict) -> None:
-    """チャットログの1件を Google Sheets に追記する"""
-    try:
-        ws = _get_log_sheet()
-        row = [
-            entry.get("id", ""),
-            entry.get("timestamp", ""),
-            entry.get("question", ""),
-            entry.get("answer", ""),
-            entry.get("ref_ids", ""),
-            entry.get("feedback", ""),
-        ]
-        ws.append_row(row, value_input_option="RAW")
-    except Exception as e:
-        print(f"[Sheets] ログ追記エラー: {e}")
+    """チャットログの1件を Google Sheets に追記する（エラーは呼び出し元に伝播）"""
+    ws = _get_log_sheet()
+    row = [
+        entry.get("id", ""),
+        entry.get("timestamp", ""),
+        entry.get("question", ""),
+        entry.get("answer", ""),
+        entry.get("ref_ids", ""),
+        entry.get("feedback", ""),
+    ]
+    ws.append_row(row, value_input_option="RAW")
 
 
 def update_feedback_in_sheets(entry_id: str, value: str) -> None:
@@ -707,7 +704,10 @@ def _submit_question(question: str, records: dict, use_history: bool = False):
         "feedback":  "",
     }
     st.session_state.log.append(entry)
-    append_log_to_sheets(entry)
+    try:
+        append_log_to_sheets(entry)
+    except Exception as e:
+        st.warning(f"⚠️ Sheetsへのログ保存に失敗しました: {e}")
 
 
 def page_chat():
