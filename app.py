@@ -962,51 +962,69 @@ def _render_feedback(entry_id: str):
 
     # 未解決理由入力エリア
     if st.session_state.get(f"show_unresolved_{entry_id}"):
-        st.caption("📝 未解決の理由（任意）テキストまたは音声で入力できます")
-
-        # 音声入力（GeminiAPIキーがある場合のみ）
-        if GEMINI_API_KEY:
-            vkey = st.session_state.get(f"ur_vkey_{entry_id}", 0)
-            audio = st.audio_input("🎤 音声で入力", key=f"ur_audio_{entry_id}_{vkey}")
-            if audio is not None:
-                new_size = len(audio.read())
-                audio.seek(0)
-                if new_size != st.session_state.get(f"ur_vsize_{entry_id}", -1):
-                    st.session_state[f"ur_vsize_{entry_id}"] = new_size
-                    with st.spinner("音声を変換中..."):
-                        try:
-                            audio_bytes = audio.read()
-                            mime = getattr(audio, "type", None) or "audio/wav"
-                            transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime)
-                            st.session_state[f"ur_text_{entry_id}"] = transcribed
-                            st.session_state[f"ur_vkey_{entry_id}"] = vkey + 1
-                        except Exception as e:
-                            st.error(f"音声変換エラー: {e}")
-                    st.rerun()
-
-        # テキスト入力（音声変換結果も反映される）
-        reason = st.text_input(
-            "理由（省略可）",
-            key=f"ur_text_{entry_id}",
-            placeholder="例: SVへ確認が必要 / 情報が不足している",
-            label_visibility="collapsed",
+        st.markdown(
+            """
+            <div style="
+                background: #FFF3E0;
+                border-left: 5px solid #FF6D00;
+                border-radius: 0 8px 8px 0;
+                padding: 10px 16px 4px 16px;
+                margin: 8px 0 4px 0;
+            ">
+              <span style="color:#E65100; font-weight:bold; font-size:14px;">
+                ❌ 未解決の理由を記録
+              </span>
+              <span style="color:#999; font-size:12px;">
+                　テキストまたは音声で入力できます（省略可）
+              </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        col_ok, col_cancel = st.columns(2)
-        with col_ok:
-            if st.button("✔ 確定", key=f"ur_ok_{entry_id}", type="primary", use_container_width=True):
-                r = reason.strip()
-                _update_feedback(entry_id, f"unresolved: {r}" if r else "unresolved")
-                for k in [f"show_unresolved_{entry_id}", f"ur_text_{entry_id}",
-                          f"ur_vkey_{entry_id}", f"ur_vsize_{entry_id}"]:
-                    st.session_state.pop(k, None)
-                st.warning("未解決として記録しました")
-        with col_cancel:
-            if st.button("キャンセル", key=f"ur_cancel_{entry_id}", use_container_width=True):
-                for k in [f"show_unresolved_{entry_id}", f"ur_text_{entry_id}",
-                          f"ur_vkey_{entry_id}", f"ur_vsize_{entry_id}"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
+        with st.container(border=True):
+            # 音声入力（GeminiAPIキーがある場合のみ）
+            if GEMINI_API_KEY:
+                vkey = st.session_state.get(f"ur_vkey_{entry_id}", 0)
+                audio = st.audio_input("🎤 音声で入力", key=f"ur_audio_{entry_id}_{vkey}")
+                if audio is not None:
+                    new_size = len(audio.read())
+                    audio.seek(0)
+                    if new_size != st.session_state.get(f"ur_vsize_{entry_id}", -1):
+                        st.session_state[f"ur_vsize_{entry_id}"] = new_size
+                        with st.spinner("音声を変換中..."):
+                            try:
+                                audio_bytes = audio.read()
+                                mime = getattr(audio, "type", None) or "audio/wav"
+                                transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime)
+                                st.session_state[f"ur_text_{entry_id}"] = transcribed
+                                st.session_state[f"ur_vkey_{entry_id}"] = vkey + 1
+                            except Exception as e:
+                                st.error(f"音声変換エラー: {e}")
+                        st.rerun()
+
+            # テキスト入力（音声変換結果も反映される）
+            reason = st.text_input(
+                "💬 テキストで入力",
+                key=f"ur_text_{entry_id}",
+                placeholder="例: SVへ確認が必要 / 情報が不足している",
+            )
+
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                if st.button("✔ 確定", key=f"ur_ok_{entry_id}", type="primary", use_container_width=True):
+                    r = reason.strip()
+                    _update_feedback(entry_id, f"unresolved: {r}" if r else "unresolved")
+                    for k in [f"show_unresolved_{entry_id}", f"ur_text_{entry_id}",
+                              f"ur_vkey_{entry_id}", f"ur_vsize_{entry_id}"]:
+                        st.session_state.pop(k, None)
+                    st.warning("未解決として記録しました")
+            with col_cancel:
+                if st.button("キャンセル", key=f"ur_cancel_{entry_id}", use_container_width=True):
+                    for k in [f"show_unresolved_{entry_id}", f"ur_text_{entry_id}",
+                              f"ur_vkey_{entry_id}", f"ur_vsize_{entry_id}"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
 
 
 def _update_feedback(entry_id: str, value: str):
