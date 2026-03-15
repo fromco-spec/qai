@@ -553,20 +553,84 @@ def run_policy_sync() -> tuple[bool, str]:
         return False, str(e)
 
 
-# ---------- ログ（既存 JSON ログ） ----------
+# ---------- Google Sheets ログ ----------
+
+LOG_SPREADSHEET_ID = "1d-9BVPqcIaVibysdM3n1aEdJ6t-vCrqljkT5ZlF1piU"
+LOG_SHEET_NAME     = "チャットログ"
+LOG_SHEET_HEADERS  = ["id", "timestamp", "question", "answer", "ref_ids", "feedback"]
+
+
+def _get_log_gspread_client():
+    """gspread クライアントを返す"""
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    sa_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "")
+
+    if sa_json:
+        info = json.loads(sa_json)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    elif sa_file:
+        creds = Credentials.from_service_account_file(sa_file, scopes=SCOPES)
+    else:
+        raise ValueError("Google Sheets 認証情報が未設定です")
+
+    return gspread.authorize(creds)
+
+
+def _get_log_sheet():
+    """チャットログ用ワークシートを取得（なければ作成してヘッダーを書く）"""
+    gc = _get_log_gspread_client()
+    spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
+    try:
+        ws = spreadsheet.worksheet(LOG_SHEET_NAME)
+    except Exception:
+        ws = spreadsheet.add_worksheet(
+            title=LOG_SHEET_NAME, rows=1000, cols=len(LOG_SHEET_HEADERS)
+        )
+        ws.append_row(LOG_SHEET_HEADERS, value_input_option="RAW")
+    return ws
+
 
 def load_log() -> list:
-    LOGS_DIR.mkdir(exist_ok=True)
-    if LOG_FILE.exists():
-        with open(LOG_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    """Google Sheets からチャットログを全件取得して dict リストで返す"""
+    try:
+        ws = _get_log_sheet()
+        return ws.get_all_records()
+    except Exception as e:
+        print(f"[Sheets] ログ読み込みエラー: {e}")
+        return []
 
 
-def save_log(log: list):
-    LOGS_DIR.mkdir(exist_ok=True)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
+def append_log_to_sheets(entry: dict) -> None:
+    """チャットログの1件を Google Sheets に追記する"""
+    try:
+        ws = _get_log_sheet()
+        row = [
+            entry.get("id", ""),
+            entry.get("timestamp", ""),
+            entry.get("question", ""),
+            entry.get("answer", ""),
+            entry.get("ref_ids", ""),
+            entry.get("feedback", ""),
+        ]
+        ws.append_row(row, value_input_option="RAW")
+    except Exception as e:
+        print(f"[Sheets] ログ追記エラー: {e}")
+
+
+def update_feedback_in_sheets(entry_id: str, value: str) -> None:
+    """Google Sheets の該当行の feedback 列を更新する"""
+    try:
+        ws = _get_log_sheet()
+        cell = ws.find(entry_id, in_column=1)
+        if cell:
+            feedback_col = LOG_SHEET_HEADERS.index("feedback") + 1
+            ws.update_cell(cell.row, feedback_col, value)
+    except Exception as e:
+        print(f"[Sheets] フィードバック更新エラー: {e}")
 
 
 # ---------- Claude API ----------
@@ -633,19 +697,17 @@ def _submit_question(question: str, records: dict, use_history: bool = False):
         "show_feedback": True,
     })
 
-    # 既存 JSON ログ
+    # Google Sheets にログを追記
     entry = {
         "id":        entry_id,
         "timestamp": timestamp,
         "question":  question,
         "answer":    answer,
-        "feedback":  None,
+        "ref_ids":   "|".join(ref_ids),
+        "feedback":  "",
     }
     st.session_state.log.append(entry)
-    save_log(st.session_state.log)
-
-    # ③ PDCA用 CSV ログに追記
-    append_chat_history_csv(question, answer, ref_ids)
+    append_log_to_sheets(entry)
 
 
 def page_chat():
@@ -672,7 +734,7 @@ def page_chat():
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "log" not in st.session_state:
-        st.session_state.log = load_log()
+        st.session_state.log = []
     if "deepdive_id" not in st.session_state:
         st.session_state.deepdive_id = None
     if "voice_text" not in st.session_state:
@@ -865,28 +927,16 @@ def _render_feedback(entry_id: str):
 
 
 def _update_feedback(entry_id: str, value: str):
-    log = st.session_state.log
-    for entry in log:
+    for entry in st.session_state.log:
         if entry["id"] == entry_id:
             entry["feedback"] = value
             break
-    save_log(log)
+    update_feedback_in_sheets(entry_id, value)
 
-    # ③ CSV ログのフィードバックも更新
     for msg in st.session_state.messages:
         if msg.get("id") == entry_id:
-            update_csv_feedback(
-                question=msg.get("question", ""),
-                timestamp=msg.get("timestamp", ""),
-                feedback=value,
-            )
             msg["show_feedback"] = False
             break
-    else:
-        # session_state に question/timestamp がない場合はフォールバック
-        for msg in st.session_state.messages:
-            if msg.get("id") == entry_id:
-                msg["show_feedback"] = False
 
 
 # ---------- ページ: 管理画面 ----------
@@ -942,31 +992,13 @@ def page_admin():
     else:
         st.success("未解決の質問はありません")
 
-    # --- PDCA用CSV ダウンロード ---
+    # --- Google Sheets リンク ---
     st.divider()
-    st.subheader("📥 PDCA用ログ（chat_history_log.csv）")
-    if CHAT_HISTORY_CSV.exists():
-        with open(CHAT_HISTORY_CSV, encoding="utf-8-sig") as f:
-            csv_bytes = f.read().encode("utf-8-sig")
-        st.download_button(
-            label="📥 chat_history_log.csv をダウンロード",
-            data=csv_bytes,
-            file_name="chat_history_log.csv",
-            mime="text/csv",
-        )
-        # プレビュー（最新10件）
-        import pandas as pd
-        df_csv = pd.read_csv(CHAT_HISTORY_CSV, encoding="utf-8-sig")
-        st.dataframe(
-            df_csv.tail(10)[["timestamp", "question", "feedback"]].rename(columns={
-                "timestamp": "日時",
-                "question": "質問",
-                "feedback": "フィードバック",
-            }),
-            use_container_width=True,
-        )
-    else:
-        st.info("まだ chat_history_log.csv がありません。チャット画面で質問すると自動作成されます。")
+    st.subheader("📊 ログデータ（Google Sheets）")
+    st.markdown(
+        "[📊 Google Sheets でログを確認する](https://docs.google.com/spreadsheets/d/1d-9BVPqcIaVibysdM3n1aEdJ6t-vCrqljkT5ZlF1piU/edit)"
+    )
+    st.caption("チャットログはGoogle Sheetsに保存されています。上のリンクから全件確認・ダウンロードできます。")
 
     # --- 全ログ ---
     st.divider()
