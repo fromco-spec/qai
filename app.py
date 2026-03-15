@@ -566,18 +566,34 @@ def _get_log_gspread_client():
     from google.oauth2.service_account import Credentials
 
     SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+
+    # 方法1: st.secrets に辞書形式で登録されている場合（推奨）
+    # [gcp_service_account] セクション or GOOGLE_SERVICE_ACCOUNT_JSON キー
+    try:
+        if "gcp_service_account" in st.secrets:
+            info = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+            return gspread.authorize(creds)
+    except Exception:
+        pass
+
+    # 方法2: st.secrets に JSON 文字列で登録されている場合
+    try:
+        raw = st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        if raw:
+            info = json.loads(str(raw).strip())
+            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+            return gspread.authorize(creds)
+    except Exception:
+        pass
+
+    # 方法3: ローカル開発用（環境変数のファイルパス）
     sa_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "")
-
-    if sa_json:
-        info = json.loads(sa_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    elif sa_file:
+    if sa_file:
         creds = Credentials.from_service_account_file(sa_file, scopes=SCOPES)
-    else:
-        raise ValueError("Google Sheets 認証情報が未設定です")
+        return gspread.authorize(creds)
 
-    return gspread.authorize(creds)
+    raise ValueError("Google Sheets 認証情報が未設定です（st.secrets に gcp_service_account または GOOGLE_SERVICE_ACCOUNT_JSON を登録してください）")
 
 
 def _get_log_sheet():
