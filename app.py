@@ -316,13 +316,17 @@ def retrieve_knowledge(question: str, records: dict) -> tuple[str, list[str]]:
         if not all_recs:
             continue
 
-        scored = sorted(all_recs, key=lambda r: _score(r, query_tokens), reverse=True)
+        scored = sorted(
+            [(r, _score(r, query_tokens)) for r in all_recs],
+            key=lambda x: x[1],
+            reverse=True,
+        )
         selected = scored[:top_n]
 
         block = [f"## {header}"]
-        for r in selected:
+        for r, score in selected:
             block.append(f"### {r['title']}\n{_clean_summary(r['summary'])}")
-            if r.get("id"):
+            if r.get("id") and score > 0:   # スコア0は参照元に含めない
                 ref_ids.append(str(r["id"]))
         sections.append("\n".join(block))
         retrieved_counts[key] = len(selected)
@@ -790,7 +794,7 @@ def page_chat():
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg["role"] == "assistant" and msg.get("ref_titles"):
-                titles = msg["ref_titles"]
+                titles = msg["ref_titles"][:5]   # 最大5件表示
                 st.caption("📎 参照元: " + " / ".join(titles))
         if msg["role"] == "assistant" and msg.get("show_feedback"):
             _render_feedback(msg["id"])
