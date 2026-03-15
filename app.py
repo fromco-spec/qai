@@ -810,7 +810,7 @@ def page_chat():
 
         # 深掘りモードでも音声入力を表示
         if GEMINI_API_KEY:
-            with st.expander("🎤 音声で質問する", expanded=True):
+            with st.expander("🎤 新しく音声で質問する", expanded=True):
                 st.caption("マイクボタンを押して話しかけてください。録音後に自動でテキスト変換します。")
                 audio_input_dd = st.audio_input(
                     "🔴 録音する（再録音する場合もここから）",
@@ -875,7 +875,7 @@ def page_chat():
     else:
         # 音声入力エリア（GeminiAPIキーがある場合のみ表示）
         if GEMINI_API_KEY:
-            with st.expander("🎤 音声で質問する", expanded=True):
+            with st.expander("🎤 新しく音声で質問する", expanded=True):
                 st.caption("マイクボタンを押して話しかけてください。録音後に自動でテキスト変換します。")
 
                 # 録音エリアは常に表示（テキスト表示中も再録音できる）
