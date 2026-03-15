@@ -948,8 +948,8 @@ def _render_feedback(entry_id: str):
             st.success("フィードバックを記録しました")
     with col2:
         if st.button("❌ 未解決", key=f"ng_{entry_id}", use_container_width=True):
-            _update_feedback(entry_id, "unresolved")
-            st.warning("フィードバックを記録しました")
+            st.session_state[f"show_unresolved_{entry_id}"] = True
+            st.rerun()
     with col3:
         if st.button("🔍 さらに深ぼる", key=f"deep_{entry_id}", use_container_width=True):
             st.session_state.deepdive_id = entry_id
@@ -959,6 +959,54 @@ def _render_feedback(entry_id: str):
             st.session_state.messages = []
             st.session_state.deepdive_id = None
             st.rerun()
+
+    # 未解決理由入力エリア
+    if st.session_state.get(f"show_unresolved_{entry_id}"):
+        st.caption("📝 未解決の理由（任意）テキストまたは音声で入力できます")
+
+        # 音声入力（GeminiAPIキーがある場合のみ）
+        if GEMINI_API_KEY:
+            vkey = st.session_state.get(f"ur_vkey_{entry_id}", 0)
+            audio = st.audio_input("🎤 音声で入力", key=f"ur_audio_{entry_id}_{vkey}")
+            if audio is not None:
+                new_size = len(audio.read())
+                audio.seek(0)
+                if new_size != st.session_state.get(f"ur_vsize_{entry_id}", -1):
+                    st.session_state[f"ur_vsize_{entry_id}"] = new_size
+                    with st.spinner("音声を変換中..."):
+                        try:
+                            audio_bytes = audio.read()
+                            mime = getattr(audio, "type", None) or "audio/wav"
+                            transcribed = transcribe_audio_gemini(audio_bytes, mime_type=mime)
+                            st.session_state[f"ur_text_{entry_id}"] = transcribed
+                            st.session_state[f"ur_vkey_{entry_id}"] = vkey + 1
+                        except Exception as e:
+                            st.error(f"音声変換エラー: {e}")
+                    st.rerun()
+
+        # テキスト入力（音声変換結果も反映される）
+        reason = st.text_input(
+            "理由（省略可）",
+            key=f"ur_text_{entry_id}",
+            placeholder="例: SVへ確認が必要 / 情報が不足している",
+            label_visibility="collapsed",
+        )
+
+        col_ok, col_cancel = st.columns(2)
+        with col_ok:
+            if st.button("✔ 確定", key=f"ur_ok_{entry_id}", type="primary", use_container_width=True):
+                r = reason.strip()
+                _update_feedback(entry_id, f"unresolved: {r}" if r else "unresolved")
+                for k in [f"show_unresolved_{entry_id}", f"ur_text_{entry_id}",
+                          f"ur_vkey_{entry_id}", f"ur_vsize_{entry_id}"]:
+                    st.session_state.pop(k, None)
+                st.warning("未解決として記録しました")
+        with col_cancel:
+            if st.button("キャンセル", key=f"ur_cancel_{entry_id}", use_container_width=True):
+                for k in [f"show_unresolved_{entry_id}", f"ur_text_{entry_id}",
+                          f"ur_vkey_{entry_id}", f"ur_vsize_{entry_id}"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
 
 def _update_feedback(entry_id: str, value: str):
@@ -996,7 +1044,7 @@ def page_admin():
     # --- サマリー ---
     total      = len(log)
     resolved   = sum(1 for e in log if e.get("feedback") == "resolved")
-    unresolved = sum(1 for e in log if e.get("feedback") == "unresolved")
+    unresolved = sum(1 for e in log if str(e.get("feedback", "")).startswith("unresolved"))
     no_fb      = total - resolved - unresolved
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1053,11 +1101,16 @@ def page_admin():
     # --- 未解決ログ一覧 ---
     st.divider()
     st.subheader("未解決の質問一覧")
-    unresolved_list = [e for e in log if e.get("feedback") == "unresolved"]
+    unresolved_list = [e for e in log if str(e.get("feedback", "")).startswith("unresolved")]
     if unresolved_list:
         for e in sorted(unresolved_list, key=lambda x: x["timestamp"], reverse=True):
             with st.expander(f"[{e['timestamp']}] {e['question'][:60]}"):
                 st.markdown(f"**質問:** {e['question']}")
+                fb = str(e.get("feedback", ""))
+                if ": " in fb:
+                    reason = fb.split(": ", 1)[1].strip()
+                    if reason:
+                        st.caption(f"💬 理由: {reason}")
                 st.markdown(f"**回答:** {e['answer']}")
     else:
         st.success("未解決の質問はありません")
