@@ -309,7 +309,7 @@ def retrieve_knowledge(question: str, records: dict) -> tuple[str, list[str]]:
 
     sections = []
     retrieved_counts = {}
-    ref_ids: list[str] = []   # ③ 参照サマリーIDを収集
+    all_scored_refs: list[tuple[str, int]] = []  # (id, score) 全カテゴリ分を収集
 
     for key, header, top_n in section_meta:
         all_recs = records.get(key, [])
@@ -326,10 +326,14 @@ def retrieve_knowledge(question: str, records: dict) -> tuple[str, list[str]]:
         block = [f"## {header}"]
         for r, score in selected:
             block.append(f"### {r['title']}\n{_clean_summary(r['summary'])}")
-            if r.get("id") and score > 0:   # スコア0は参照元に含めない
-                ref_ids.append(str(r["id"]))
+            if r.get("id") and score > 0:
+                all_scored_refs.append((str(r["id"]), score))
         sections.append("\n".join(block))
         retrieved_counts[key] = len(selected)
+
+    # スコア上位5件のみを参照元として返す
+    all_scored_refs.sort(key=lambda x: x[1], reverse=True)
+    ref_ids = [rid for rid, _ in all_scored_refs[:5]]
 
     body = "\n\n".join(sections)
     summary_line = (
