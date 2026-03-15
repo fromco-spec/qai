@@ -944,6 +944,15 @@ def _update_feedback(entry_id: str, value: str):
 def page_admin():
     st.title("📊 管理画面")
 
+    # --- Sheets 接続テスト ---
+    with st.expander("🔧 Google Sheets 接続テスト", expanded=True):
+        if st.button("接続テストを実行"):
+            try:
+                ws = _get_log_sheet()
+                st.success(f"✅ 接続成功！シート名: {ws.title}  /  行数: {ws.row_count}")
+            except Exception as e:
+                st.error(f"❌ 接続失敗: {e}")
+
     log = load_log()
     if not log:
         st.info("ログがまだありません。チャット画面で質問してみましょう。")
